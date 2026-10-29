@@ -42,15 +42,20 @@ export async function requireAdmin(req, res) {
 export async function requireBroker(req, res) {
   const token = getToken(req)
   if (!token) { err(res, 'Unauthorized', 401); return null }
-  const { data } = await supabase
+  const { data: session } = await supabase
     .from('sessions')
-    .select('*, brokers(broker_code, company_name, contact_name, email)')
+    .select('*')
     .eq('token', token)
     .eq('role', 'broker')
     .gt('expires_at', new Date().toISOString())
     .single()
-  if (!data) { err(res, 'Session expired', 401); return null }
-  return data
+  if (!session) { err(res, 'Session expired', 401); return null }
+  const { data: broker } = await supabase
+    .from('brokers')
+    .select('broker_code, company_name, contact_name, email')
+    .eq('id', session.user_id)
+    .single()
+  return { ...session, brokers: broker || {} }
 }
 
 export async function requireAny(req, res) {
