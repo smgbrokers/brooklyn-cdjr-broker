@@ -1,6 +1,13 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
 
+async function getBrokerMap() {
+  const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
+  const map = {}
+  if (data) data.forEach(b => map[b.id] = b)
+  return map
+}
+
 export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
@@ -14,7 +21,7 @@ export default async function handler(req, res) {
     if (!session) return
 
     if (session.role === 'admin') {
-      let query = supabase.from('deals').select(`*, brokers(company_name, broker_code, contact_name, email)`).order('created_at', { ascending: false })
+      let query = supabase.from('deals').select('*').order('created_at', { ascending: false })
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       if (req.query.broker_id && req.query.broker_id !== 'All') query = query.eq('broker_id', req.query.broker_id)
       if (req.query.search) {
@@ -23,15 +30,18 @@ export default async function handler(req, res) {
       }
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      const flat = data.map(d => ({ ...d, broker_name: d.brokers?.company_name, broker_code: d.brokers?.broker_code, broker_contact: d.brokers?.contact_name, broker_email: d.brokers?.email }))
+      const brokerMap = await getBrokerMap()
+      const flat = data.map(d => {
+        const b = brokerMap[d.broker_id] || {}
+        return { ...d, broker_name: b.company_name, broker_code: b.broker_code, broker_contact: b.contact_name, broker_email: b.email }
+      })
       return ok(res, flat)
     } else {
-      let query = supabase.from('deals').select(`*, brokers(company_name, broker_code)`).eq('broker_id', session.user_id).order('created_at', { ascending: false })
+      let query = supabase.from('deals').select('*').eq('broker_id', session.user_id).order('created_at', { ascending: false })
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      const flat = data.map(d => ({ ...d, broker_name: d.brokers?.company_name, broker_code: d.brokers?.broker_code }))
-      return ok(res, flat)
+      return ok(res, data)
     }
   }
 
@@ -39,9 +49,12 @@ export default async function handler(req, res) {
   if (req.method === 'GET' && action === 'credit_app') {
     const session = await requireAdmin(req, res)
     if (!session) return
-    const { data } = await supabase.from('credit_apps').select(`*, deals(deal_number, vehicle_desc, stock_num, msrp, brokers(company_name))`).eq('deals.deal_number', req.query.deal_number).single()
-    if (!data) return err(res, 'No credit app found', 404)
-    return ok(res, data)
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', req.query.deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    const { data: app } = await supabase.from('credit_apps').select('*').eq('deal_id', deal.id).single()
+    if (!app) return err(res, 'No credit app found', 404)
+    const { data: broker } = await supabase.from('brokers').select('company_name').eq('id', deal.broker_id).single()
+    return ok(res, { ...app, deal, broker_name: broker?.company_name })
   }
 
   // GET credit app as HTML
@@ -55,11 +68,12 @@ export default async function handler(req, res) {
       if (!session) return
     }
     const dealNum = req.query.deal_number
-    const { data: deal } = await supabase.from('deals').select(`*, brokers(company_name)`).eq('deal_number', dealNum).single()
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', dealNum).single()
     if (!deal) { res.status(404).send('Deal not found'); return }
     const { data: app } = await supabase.from('credit_apps').select('*').eq('deal_id', deal.id).single()
     if (!app) { res.status(404).send('No credit app found'); return }
-    const html = generateCreditAppHtml(app, deal, { company_name: deal.brokers?.company_name })
+    const { data: broker } = await supabase.from('brokers').select('company_name').eq('id', deal.broker_id).single()
+    const html = generateCreditAppHtml(app, deal, { company_name: broker?.company_name })
     res.setHeader('Content-Type', 'text/html; charset=UTF-8')
     res.send(html)
     return
@@ -98,12 +112,11 @@ export default async function handler(req, res) {
     const { error } = await supabase.from('credit_apps').insert({ deal_id: deal.id, ...appData })
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
-    // Email admins with attachment
     const { data: admins } = await supabase.from('admins').select('name,email').eq('notify_email', true).not('email', 'is', null)
     if (admins) {
       const html = generateCreditAppHtml(appData, deal, broker)
       const subject = `Credit Application — Deal #${deal_number} — ${appData.first_name} ${appData.last_name}`
-      const text = `A credit application has been submitted.\n\nDeal #: ${deal_number}\nBroker: ${broker.company_name}\nCustomer: ${appData.first_name} ${appData.last_name}\nVehicle: ${deal.vehicle_desc}\n\nLog in: https://brooklyn-cdjr-broker.vercel.app`
+      const text = `A credit application has been submitted.\n\nDeal #: ${deal_number}\nBroker: ${broker.company_name}\nCustomer: ${appData.first_name} ${appData.last_name}\nVehicle: ${deal.vehicle_desc}\n\nLog in: https://brooklyn-cdjr-broker-wrzb.vercel.app`
       for (const admin of admins) await sendEmailWithAttachment(admin.email, subject, text, html, `CreditApp_${deal_number}_${appData.last_name}.html`)
     }
     return ok(res, { ok: true })
