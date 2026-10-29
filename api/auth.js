@@ -40,7 +40,8 @@ export default async function handler(req, res) {
     await supabase.from('sessions').delete().eq('user_id', broker.id).eq('role', 'broker')
     const token = generateToken()
     const expires = new Date(Date.now() + SESSION_HOURS * 3600000).toISOString()
-    await supabase.from('sessions').insert({ token, role: 'broker', user_id: broker.id, expires_at: expires })
+    const { error: sessErr } = await supabase.from('sessions').insert({ token, role: 'broker', user_id: broker.id, expires_at: expires })
+    if (sessErr) return err(res, 'Session creation failed: ' + sessErr.message, 500)
     return ok(res, { token, role: 'broker', broker_id: broker.id, broker_code: broker.broker_code, username: broker.username, company_name: broker.company_name, contact_name: broker.contact_name, email: broker.email, phone: broker.phone })
   }
 
