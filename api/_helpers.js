@@ -144,6 +144,70 @@ export async function notifyBrokerVehicleAvailable(deal, broker) {
 }
 
 export function generateCreditAppHtml(app, deal, broker) {
+  const primary = app.primary || app;
+  const cosigner = app.cosigner || null;
+  const business = app.business || null;
+  const appType = app.app_type || 'individual';
+  const isBiz = appType === 'business' || appType === 'business_cosigner';
+  const hasCosigner = appType === 'individual_cosigner' || appType === 'business_cosigner';
+  const showPrevAddr = (a) => {
+    const y = parseInt(a.housing_years) || 0;
+    const m = parseInt(a.housing_months) || 0;
+    return (y * 12 + m) < 24;
+  };
+
+  const appTypeLabel = {
+    individual: 'Individual',
+    individual_cosigner: 'Individual + Co-Signer',
+    business: 'Business',
+    business_cosigner: 'Business + Co-Signer'
+  }[appType] || 'Individual';
+
+  const field = (label, val) => val ? `<div class="field"><label>${label}</label><span>${val}</span></div>` : '';
+  const fieldFull = (label, val) => val ? `<div class="field full"><label>${label}</label><span>${val}</span></div>` : '';
+
+  const applicantHtml = (a, title) => {
+    if (!a) return '';
+    const showPrev = showPrevAddr(a);
+    return `
+    ${title ? `<div class="applicant-label">${title}</div>` : ''}
+    <div class="section"><div class="st">Personal Information</div><div class="grid">
+      ${field('First Name', a.first_name)}
+      ${field('Last Name', a.last_name)}
+      ${field('Date of Birth', a.dob)}
+      ${field('SSN', a.ssn ? 'XXX-XX-' + String(a.ssn).slice(-4) : '')}
+      ${field('Cell Phone', a.cell_phone)}
+      ${field('Work Phone', a.work_phone)}
+      ${fieldFull('Email', a.email)}
+    </div></div>
+    <div class="section"><div class="st">Housing</div><div class="grid">
+      ${fieldFull('Current Address', [a.address, a.city, a.state, a.zip].filter(Boolean).join(', '))}
+      ${field('Housing Status', a.housing_status)}
+      ${field('Monthly Payment', a.housing_monthly_pmt)}
+      ${field('Time at Address', (a.housing_years || 0) + ' yrs ' + (a.housing_months || 0) + ' mos')}
+      ${showPrev ? fieldFull('Previous Address', [a.prev_address, a.prev_city, a.prev_state, a.prev_zip].filter(Boolean).join(', ')) : ''}
+      ${showPrev ? field('Time at Prev Address', (a.prev_years || 0) + ' yrs ' + (a.prev_months || 0) + ' mos') : ''}
+    </div></div>
+    <div class="section"><div class="st">Employment</div><div class="grid">
+      ${field('Employer', a.employer)}
+      ${field('Job Title', a.job_title)}
+      ${field('Time on Job', (a.years_on_job || 0) + ' yrs ' + (a.months_on_job || 0) + ' mos')}
+      ${field('Monthly Income', a.monthly_income)}
+      ${field('Employment Type', a.employment_type)}
+    </div></div>`;
+  };
+
+  const bizHtml = business ? `
+    <div class="section"><div class="st">Business Information</div><div class="grid">
+      ${fieldFull('Business Name', business.business_name)}
+      ${field('Business Type', business.business_type)}
+      ${field('EIN / Tax ID', business.ein)}
+      ${field('Business Phone', business.business_phone)}
+      ${field('Years in Business', business.years_in_business)}
+      ${field('Annual Revenue', business.annual_revenue)}
+      ${fieldFull('Business Address', [business.business_address, business.business_city, business.business_state, business.business_zip].filter(Boolean).join(', '))}
+    </div></div>` : '';
+
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
     @media print{.no-print{display:none!important}}
     @page{margin:0.75in;size:letter}
@@ -151,7 +215,9 @@ export function generateCreditAppHtml(app, deal, broker) {
     .header{background:#0F172A;color:#fff;padding:16px 20px;border-radius:6px;margin-bottom:20px}
     .header h1{margin:0;font-size:18px;letter-spacing:1px}
     .header p{margin:4px 0 0;font-size:11px;opacity:.8}
-    .section{margin-bottom:16px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}
+    .app-type-badge{display:inline-block;background:#1D4ED8;color:#fff;padding:3px 12px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.05em;margin-top:6px}
+    .applicant-label{background:#DBEAFE;color:#1E40AF;font-weight:700;font-size:12px;padding:8px 14px;border-radius:6px;margin:16px 0 8px}
+    .section{margin-bottom:12px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}
     .st{background:#f8fafc;padding:8px 14px;font-weight:bold;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#374151;border-bottom:1px solid #e2e8f0}
     .grid{display:grid;grid-template-columns:1fr 1fr}
     .field{padding:8px 14px;border-bottom:1px solid #f1f5f9}
@@ -162,6 +228,7 @@ export function generateCreditAppHtml(app, deal, broker) {
     .deal-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:12px 16px;margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
     .deal-box .item label{display:block;font-size:9px;text-transform:uppercase;color:#0369a1;margin-bottom:2px}
     .deal-box .item span{font-weight:700;color:#0c4a6e}
+    .cosigner-block{border:2px solid #E5E7EB;border-radius:8px;padding:12px;margin-top:16px}
     .footer{margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:9px;color:#9ca3af;text-align:center}
     .print-btn{position:fixed;top:16px;right:16px;display:flex;gap:10px;z-index:999}
     .btn{border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
@@ -170,35 +237,21 @@ export function generateCreditAppHtml(app, deal, broker) {
     <button class="btn" style="background:#1D4ED8;color:#fff" onclick="window.print()">🖨️ Print / Save as PDF</button>
     <button class="btn" style="background:#6B7280;color:#fff" onclick="window.close()">✕ Close</button>
   </div>
-  <div class="header"><h1>BROOKLYN CDJR — CREDIT APPLICATION</h1><p>Deal #${deal.deal_number} &nbsp;|&nbsp; Submitted: ${new Date().toLocaleString()}</p></div>
-  <div class="deal-box">
-    <div class="item"><label>Broker</label><span>${broker.company_name||''}</span></div>
-    <div class="item"><label>Vehicle</label><span>${deal.vehicle_desc||''}</span></div>
-    <div class="item"><label>Stock # / MSRP</label><span>${deal.stock_num||''} / ${deal.msrp||''}</span></div>
+  <div class="header">
+    <h1>BROOKLYN CDJR — CREDIT APPLICATION</h1>
+    <p>Deal #${deal.deal_number} &nbsp;|&nbsp; Submitted: ${new Date().toLocaleString()}</p>
+    <div class="app-type-badge">${appTypeLabel}</div>
   </div>
-  <div class="section"><div class="st">Personal Information</div><div class="grid">
-    <div class="field"><label>First Name</label><span>${app.first_name||''}</span></div>
-    <div class="field"><label>Last Name</label><span>${app.last_name||''}</span></div>
-    <div class="field"><label>Date of Birth</label><span>${app.dob||''}</span></div>
-    <div class="field"><label>SSN</label><span>XXX-XX-${String(app.ssn||'').slice(-4)}</span></div>
-    <div class="field"><label>Cell Phone</label><span>${app.cell_phone||''}</span></div>
-    <div class="field"><label>Work Phone</label><span>${app.work_phone||''}</span></div>
-    <div class="field full"><label>Email</label><span>${app.email||''}</span></div>
-  </div></div>
-  <div class="section"><div class="st">Housing</div><div class="grid">
-    <div class="field full"><label>Address</label><span>${app.address||''}, ${app.city||''}, ${app.state||''} ${app.zip||''}</span></div>
-    <div class="field"><label>Housing Status</label><span>${app.housing_status||''}</span></div>
-    <div class="field"><label>Monthly Payment</label><span>${app.housing_monthly_pmt||''}</span></div>
-    <div class="field"><label>Time at Address</label><span>${app.housing_years||0} yrs ${app.housing_months||0} mos</span></div>
-  </div></div>
-  <div class="section"><div class="st">Employment</div><div class="grid">
-    <div class="field"><label>Employer</label><span>${app.employer||''}</span></div>
-    <div class="field"><label>Job Title</label><span>${app.job_title||''}</span></div>
-    <div class="field"><label>Time on Job</label><span>${app.years_on_job||0} yrs ${app.months_on_job||0} mos</span></div>
-    <div class="field"><label>Monthly Income</label><span>${app.monthly_income||''}</span></div>
-    <div class="field"><label>Employment Type</label><span>${app.employment_type||''}</span></div>
-  </div></div>
-  ${app.notes?`<div class="section"><div class="st">Notes</div><div class="grid"><div class="field full"><span>${app.notes}</span></div></div></div>`:''}
+  <div class="deal-box">
+    <div class="item"><label>Broker</label><span>${broker.company_name || ''}</span></div>
+    <div class="item"><label>Vehicle</label><span>${deal.vehicle_desc || ''}</span></div>
+    <div class="item"><label>Stock # / MSRP</label><span>${deal.stock_num || ''} / ${deal.msrp || ''}</span></div>
+  </div>
+  ${bizHtml}
+  ${applicantHtml(primary, hasCosigner ? (isBiz ? 'Authorized Signer / Primary' : 'Primary Applicant') : null)}
+  ${hasCosigner ? '<div class="cosigner-block">' + applicantHtml(cosigner, 'Co-Signer') + '</div>' : ''}
+  ${app.notes ? `<div class="section"><div class="st">Notes</div><div class="grid"><div class="field full"><span>${app.notes}</span></div></div></div>` : ''}
   <div class="footer">Brooklyn CDJR Broker Portal &nbsp;|&nbsp; Generated ${new Date().toISOString()}</div>
-  </body></html>`
+  </body></html>`;
 }
+

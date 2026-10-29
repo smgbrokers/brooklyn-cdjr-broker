@@ -109,7 +109,19 @@ export default async function handler(req, res) {
     if (!deal) return err(res, 'Deal not found', 404)
     if (!deal.vehicle_available) return err(res, 'Credit application cannot be submitted until the vehicle has been confirmed available by Brooklyn CDJR.', 403)
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', session.user_id).single()
-    const { error } = await supabase.from('credit_apps').insert({ deal_id: deal.id, ...appData })
+    // Structure app data for storage
+    const { primary, cosigner, business, app_type, notes } = appData
+    const creditAppRecord = {
+      deal_id: deal.id,
+      app_type: app_type || 'individual',
+      notes: notes || '',
+      // Primary applicant fields (flattened)
+      ...(primary || appData),
+      // Store cosigner and business as JSON
+      cosigner_data: cosigner ? JSON.stringify(cosigner) : null,
+      business_data: business ? JSON.stringify(business) : null,
+    }
+    const { error } = await supabase.from('credit_apps').insert(creditAppRecord)
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
     const { data: admins } = await supabase.from('admins').select('name,email').eq('notify_email', true).not('email', 'is', null)
