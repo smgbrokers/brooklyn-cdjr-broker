@@ -121,6 +121,10 @@ export default async function handler(req, res) {
       cosigner_data: cosigner ? JSON.stringify(cosigner) : null,
       business_data: business ? JSON.stringify(business) : null,
     }
+    for (const k of ['housing_years','housing_months','years_on_job','months_on_job','prev_years','prev_months']) {
+      if (creditAppRecord[k] === '' || creditAppRecord[k] === undefined) creditAppRecord[k] = null
+    }
+    if (creditAppRecord.dob === '') creditAppRecord.dob = null
     const { error } = await supabase.from('credit_apps').insert(creditAppRecord)
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
