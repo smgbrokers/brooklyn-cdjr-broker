@@ -15,7 +15,14 @@ export default async function handler(req, res) {
     }
     const { data, error } = await query
     if (error) return err(res, error.message, 500)
-    return ok(res, data)
+    // Flags from deals: a submitted credit app marks the car CREDIT PENDING;
+    // once a deal is Approved (or later) the car is hidden from brokers.
+    const { data: dealRows } = await supabase.from('deals').select('vin,status').in('status', ['Application','Approved','Docs Sent','Ready to Pick Up','Completed'])
+    const pending = new Set()
+    const taken = new Set()
+    for (const d of dealRows || []) { if (d.status === 'Application') pending.add(d.vin); else taken.add(d.vin) }
+    const flagged = data.map(v => ({ ...v, credit_pending: pending.has(v.vin), unavailable: taken.has(v.vin) }))
+    return ok(res, session.role === 'admin' ? flagged : flagged.filter(v => !v.unavailable))
   }
 
   if (req.method === 'POST') {

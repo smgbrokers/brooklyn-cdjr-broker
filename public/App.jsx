@@ -280,8 +280,8 @@ function BrokerPortal({broker,onLogout}){
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}}>
           {filteredInv.map(v=>{const requested=requestedVins.has(v.vin);return <div key={v.vin} onClick={()=>!requested&&setSel(sel===v.vin?null:v.vin)} style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 1px 6px rgba(0,0,0,0.08)",cursor:requested?"default":"pointer",border:sel===v.vin?"2px solid #1D4ED8":"2px solid transparent",opacity:requested?0.8:1,transition:"all 0.15s",position:"relative"}}>
-            {requested&&<div style={{position:"absolute",top:12,right:12,background:"#F59E0B",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:10}}>REQUESTED</div>}
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div style={{fontWeight:700,fontSize:15,paddingRight:requested?90:0}}>{v.year_make_model}</div>{!requested&&<SBadge status={v.inv_status}/>}</div>
+            {requested&&<div style={{position:"absolute",top:12,right:12,background:"#F59E0B",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:10}}>REQUESTED</div>}{v.credit_pending&&<div title="A credit application has been submitted on this vehicle" style={{position:"absolute",top:requested?38:12,right:12,background:"#EA580C",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:10}}>CREDIT PENDING</div>}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div style={{fontWeight:700,fontSize:15,paddingRight:(requested||v.credit_pending)?120:0}}>{v.year_make_model}</div>{!requested&&!v.credit_pending&&<SBadge status={v.inv_status}/>}</div>
             <div style={{color:"#6B7280",fontSize:13,marginTop:4}}>{v.trim}</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
               <div><span style={{fontSize:11,color:"#9CA3AF",display:"block"}}>STOCK #</span><span style={{fontSize:13,fontWeight:600}}>{v.stock_num}</span></div>
