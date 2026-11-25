@@ -14,9 +14,13 @@ export const CAR_COLUMNS = [
 export const colLabel = k => (CAR_COLUMNS.find(c => c.key === k) || {}).label || k
 
 export const PORTER_SETUP_MSG = 'The Get Ready board needs a one-time database update first.'
+// Turns a database error into a plain message. When it is about the porter tables, the real reason is
+// added in brackets (and logged), so a missing table, a missing column and a stale table list can be told apart.
 export function porterFriendly(error) {
   const m = String((error && error.message) || '')
-  return /porter_cards|porter_log|porter_sessions|porters/.test(m) ? PORTER_SETUP_MSG : m
+  if (!/porter_cards|porter_log|porter_sessions|porters/.test(m)) return m
+  console.error('[porter] database problem:', m)
+  return PORTER_SETUP_MSG + ' [' + m.slice(0, 200) + ']'
 }
 
 const SUFFIXES = ['jr', 'sr', 'ii', 'iii', 'iv']
