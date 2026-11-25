@@ -83,11 +83,14 @@ export default async function handler(req, res) {
     if (!session) return
     const { rows } = req.body || {}
     if (!rows?.length) return err(res, 'No inventory data provided')
-    // Look at what is there now before replacing it: where the old rows end, and which cars are hidden (a new upload must not bring those back)
-    const lastOld = await supabase.from('inventory').select('id').order('id', { ascending: false }).limit(1)
-    const maxOldId = Number(lastOld.data && lastOld.data[0] && lastOld.data[0].id) || 0
-    const hiddenNow = await supabase.from('inventory').select('vin').eq('hidden', true)
-    const hiddenVins = new Set((hiddenNow.error ? [] : hiddenNow.data || []).map(r => r.vin))
+    // Every VIN in the inventory right now: used afterwards to find the cars that are no longer in the file
+    const oldVins = []
+    for (let from = 0; ; from += 1000) {
+      const page = await supabase.from('inventory').select('vin').order('id', { ascending: true }).range(from, from + 999)
+      if (page.error) return err(res, 'Import failed: ' + page.error.message, 500)
+      for (const r of page.data || []) oldVins.push(r.vin)
+      if ((page.data || []).length < 1000) break
+    }
     const kept = rows.filter(r => r['VIN #'] || r['VIN'] || r['vin'])
     const mapped = kept.map(r => ({
       vin:              r['VIN #'] || r['VIN'] || r['vin'] || '',
@@ -103,30 +106,32 @@ export default async function handler(req, res) {
       vehicle_sub_type: r['Vehicle Sub Type'] || '',
       age_days:         parseInt(r['Enterprise Age (Days)'] || '0') || 0,
     }))
-    // "Select Inventory" in the CSV marks the Select cars; a car that was hidden stays hidden
+    // "Select Inventory" in the CSV marks the Select cars. Cars are matched by VIN and updated in place, so a car you hid stays hidden
     const isSelect = v => /select/i.test(String(v == null ? '' : v))
-    const withFlags = mapped.map((m, i) => ({ ...m, select_inventory: isSelect(kept[i]['Select Inventory']), hidden: hiddenVins.has(m.vin) }))
-    let ins = await supabase.from('inventory').insert(withFlags)
+    const byVin = new Map()
+    mapped.forEach((m, i) => byVin.set(m.vin, { ...m, select_inventory: isSelect(kept[i]['Select Inventory']) }))
+    const withFlags = [...byVin.values()]
+    const plain = withFlags.map(({ select_inventory, ...rest }) => rest)
+    let up = await supabase.from('inventory').upsert(withFlags, { onConflict: 'vin' })
     let flagsSaved = true
-    if (ins.error && /select_inventory|hidden/.test(String(ins.error.message))) { flagsSaved = false; ins = await supabase.from('inventory').insert(mapped) }
-    if (ins.error) return err(res, 'Import failed: ' + ins.error.message, 500)
-    // the new rows are saved: now take out the old ones (until now the old inventory was untouched)
-    if (maxOldId > 0) {
-      const del = await supabase.from('inventory').delete().lte('id', maxOldId)
-      if (del.error) {
-        await supabase.from('inventory').delete().gt('id', maxOldId)
-        return err(res, 'Import failed while replacing the old inventory: ' + del.error.message, 500)
-      }
+    if (up.error && /select_inventory/.test(String(up.error.message))) { flagsSaved = false; up = await supabase.from('inventory').upsert(plain, { onConflict: 'vin' }) }
+    if (up.error) return err(res, 'Import failed: ' + up.error.message, 500)
+    // the new list is saved: now take out the cars that are no longer in the file
+    const stale = oldVins.filter(v => !byVin.has(v))
+    for (let i = 0; i < stale.length; i += 100) {
+      const del = await supabase.from('inventory').delete().in('vin', stale.slice(i, i + 100))
+      if (del.error) return err(res, 'The new inventory was saved, but cars that are no longer in the file could not be removed: ' + del.error.message, 500)
     }
     // Remember when this CSV went in, for the "Inventory refreshed" line on the Inventory pages
     const refreshedAt = new Date().toISOString()
     try {
       const { data: me } = await supabase.from('admins').select('name').eq('id', session.user_id).single()
       await supabase.storage.createBucket(META_BUCKET, { public: false })
-      const { error: metaErr } = await supabase.storage.from(META_BUCKET).upload(META_PATH, Buffer.from(JSON.stringify({ refreshed_at: refreshedAt, rows: mapped.length, by: me ? me.name : null })), { contentType: 'application/json', upsert: true })
+      const { error: metaErr } = await supabase.storage.from(META_BUCKET).upload(META_PATH, Buffer.from(JSON.stringify({ refreshed_at: refreshedAt, rows: withFlags.length, by: me ? me.name : null })), { contentType: 'application/json', upsert: true })
       if (metaErr) console.error('[inventory] could not record the refresh time:', metaErr.message)
     } catch (e) { console.error('[inventory] could not record the refresh time:', e.message) }
-    return ok(res, { ok: true, inserted: mapped.length, refreshed_at: refreshedAt, select_count: flagsSaved ? withFlags.filter(m => m.select_inventory).length : 0, hidden_kept: flagsSaved ? withFlags.filter(m => m.hidden).length : 0, flags_saved: flagsSaved })
+    const hid = flagsSaved ? await supabase.from('inventory').select('vin').eq('hidden', true) : { error: true }
+    return ok(res, { ok: true, inserted: withFlags.length, refreshed_at: refreshedAt, select_count: flagsSaved ? withFlags.filter(m => m.select_inventory).length : 0, hidden_kept: hid.error ? 0 : (hid.data || []).length, flags_saved: flagsSaved })
   }
 
   return err(res, 'Method not allowed', 405)
