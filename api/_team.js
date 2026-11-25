@@ -24,6 +24,16 @@ export function brokerCanSee(session, deal) {
   return String(deal.broker_user_id || '') === String(session.broker_user_id)
 }
 
+// The deals a broker-side login may see, optionally narrowed by person (me | owner | a team member id)
+export function filterBrokerDeals(session, data, ownerQ) {
+  const q = String(ownerQ || 'all')
+  if (session.broker_user_id && session.broker_user_role !== 'admin') return data.filter(d => String(d.broker_user_id || '') === String(session.broker_user_id))
+  if (q === 'me') return data.filter(d => (session.broker_user_id ? String(d.broker_user_id || '') === String(session.broker_user_id) : !d.broker_user_id))
+  if (q === 'owner') return data.filter(d => !d.broker_user_id)
+  if (/^[0-9]+$/.test(q)) return data.filter(d => String(d.broker_user_id || '') === q)
+  return data
+}
+
 // Who should hear about a deal by email: the company address plus the salesperson who created the deal
 export async function brokerRecipients(broker, deal) {
   const list = []

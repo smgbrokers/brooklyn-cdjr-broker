@@ -2,7 +2,8 @@ import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
 import { logEvent } from './_audit.js'
-import { brokerCanSee, brokerRecipients } from './_team.js'
+import { brokerCanSee, brokerRecipients, filterBrokerDeals } from './_team.js'
+import { computePayout, buildStats } from './_payout.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -82,20 +83,7 @@ export default async function handler(req, res) {
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      // Salespeople see only the deals they created. The owner and company admins see the whole company
-      // and can narrow it down with ?owner=me | owner | <team member id>.
-      let rows = data
-      const ownerQ = String(req.query.owner || 'all')
-      if (session.broker_user_id && session.broker_user_role !== 'admin') {
-        rows = data.filter(d => String(d.broker_user_id || '') === String(session.broker_user_id))
-      } else if (ownerQ === 'me') {
-        rows = data.filter(d => (session.broker_user_id ? String(d.broker_user_id || '') === String(session.broker_user_id) : !d.broker_user_id))
-      } else if (ownerQ === 'owner') {
-        rows = data.filter(d => !d.broker_user_id)
-      } else if (/^[0-9]+$/.test(ownerQ)) {
-        rows = data.filter(d => String(d.broker_user_id || '') === ownerQ)
-      }
-      return ok(res, await withDocSummary(rows))
+      return ok(res, await withDocSummary(filterBrokerDeals(session, data, req.query.owner)))
     }
   }
 
@@ -344,26 +332,93 @@ export default async function handler(req, res) {
     const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).single()
     if (!deal) return err(res, 'Deal not found', 404)
     const today = new Date().toISOString().split('T')[0]
+    // Closing a deal (Completed) needs the money: total bird dog and any short COD. The check amount is worked out here.
+    let payoutFields = null
+    if (status === 'Completed' && deal.status !== 'Completed') {
+      const p = computePayout(body)
+      if (p.error) return err(res, p.error)
+      payoutFields = p.fields
+    }
     const updates = {}
     if (status) {
       updates.status = status
       if (status === 'Application' && !deal.app_date)      updates.app_date = today
       if (status === 'Approved'    && !deal.approved_date) updates.approved_date = today
-      if (status === 'Completed'   && !deal.sold_date)     updates.sold_date = today
+      if (status === 'Completed' && deal.status !== 'Completed') { updates.sold_date = today; Object.assign(updates, payoutFields) }
     }
     const marking_available = vehicle_available === true && !deal.vehicle_available
     if (vehicle_available !== undefined) {
       updates.vehicle_available = vehicle_available
       if (vehicle_available) updates.vehicle_available_at = new Date().toISOString()
     }
-    await supabase.from('deals').update(updates).eq('deal_number', deal_number)
+    const { error: upErr } = await supabase.from('deals').update(updates).eq('deal_number', deal_number)
+    if (upErr) return err(res, /bird_dog|short_cod|check_amount/.test(upErr.message) ? 'Recording the payout needs a one-time database update first.' : upErr.message, 500)
+    if (payoutFields) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'payout_recorded', detail: 'Bird dog $' + payoutFields.bird_dog_total.toFixed(2) + ', short COD $' + payoutFields.short_cod.toFixed(2) + ', check $' + payoutFields.check_amount.toFixed(2) })
     if (status && status !== deal.status) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'status_changed', detail: deal.status + ' \u2192 ' + status })
     if (vehicle_available !== undefined && !!vehicle_available !== !!deal.vehicle_available) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: vehicle_available ? 'vehicle_confirmed' : 'vehicle_unconfirmed', detail: deal.vehicle_desc || null })
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) })
     }
-    return ok(res, { ok: true })
+    return ok(res, { ok: true, deal: updates })
+  }
+
+  // Staff: correct the payout amounts of a completed deal, or mark its check paid or unpaid
+  if (req.method === 'PUT' && action === 'payout') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { deal_number, paid, check_ref } = body
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    if (deal.status !== 'Completed') return err(res, 'Payouts can be recorded once the deal is Completed.')
+    const updates = {}
+    const logs = []
+    if (body.bird_dog_total !== undefined || body.short_cod !== undefined) {
+      if (deal.check_paid_at) return err(res, 'Mark the check unpaid before changing the amounts.')
+      const p = computePayout({ bird_dog_total: body.bird_dog_total !== undefined ? body.bird_dog_total : deal.bird_dog_total, short_cod: body.short_cod !== undefined ? body.short_cod : deal.short_cod })
+      if (p.error) return err(res, p.error)
+      Object.assign(updates, p.fields)
+      logs.push({ action: deal.check_amount === null || deal.check_amount === undefined ? 'payout_recorded' : 'payout_edited', detail: 'Bird dog $' + p.fields.bird_dog_total.toFixed(2) + ', short COD $' + p.fields.short_cod.toFixed(2) + ', check $' + p.fields.check_amount.toFixed(2) })
+    }
+    if (paid !== undefined) {
+      if (paid) {
+        const amount = updates.check_amount !== undefined ? updates.check_amount : deal.check_amount
+        if (amount === null || amount === undefined) return err(res, 'Enter the payout amounts first.')
+        updates.check_paid_at = new Date().toISOString()
+        updates.check_ref = String(check_ref || '').trim().slice(0, 60) || null
+        logs.push({ action: 'check_paid', detail: '$' + Number(amount).toFixed(2) + (updates.check_ref ? ' (' + updates.check_ref + ')' : '') })
+      } else {
+        updates.check_paid_at = null
+        updates.check_ref = null
+        logs.push({ action: 'check_unpaid', detail: '$' + Number(deal.check_amount || 0).toFixed(2) })
+      }
+    }
+    if (!Object.keys(updates).length) return err(res, 'Nothing to change')
+    const { error } = await supabase.from('deals').update(updates).eq('deal_number', deal_number)
+    if (error) return err(res, /bird_dog|short_cod|check_amount|check_paid|check_ref/.test(error.message) ? 'Payouts need a one-time database update first.' : error.message, 500)
+    for (const l of logs) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: l.action, detail: l.detail })
+    return ok(res, { ok: true, deal: updates })
+  }
+
+  // Money and deal statistics: staff for one broker (or all brokers), brokers for their own deals
+  if (req.method === 'GET' && action === 'stats') {
+    const session = await requireAny(req, res)
+    if (!session) return
+    if (session.role === 'admin') {
+      let q = supabase.from('deals').select('*').order('created_at', { ascending: false }).limit(5000)
+      if (req.query.broker_id) q = q.eq('broker_id', req.query.broker_id)
+      const { data, error } = await q
+      if (error) return err(res, error.message, 500)
+      const { data: bs } = await supabase.from('brokers').select('id,company_name')
+      const brokerNames = {}
+      for (const b of bs || []) brokerNames[b.id] = b.company_name
+      return ok(res, buildStats(data || [], { brokerNames, byBroker: !req.query.broker_id, byPerson: !!req.query.broker_id }))
+    }
+    const { data, error } = await supabase.from('deals').select('*').eq('broker_id', session.user_id).order('created_at', { ascending: false }).limit(5000)
+    if (error) return err(res, error.message, 500)
+    const rows = filterBrokerDeals(session, data || [], req.query.owner)
+    const seesAll = !session.broker_user_id || session.broker_user_role === 'admin'
+    return ok(res, buildStats(rows, { byPerson: seesAll }))
   }
 
   return err(res, 'Unknown route', 404)
