@@ -179,6 +179,7 @@ export default async function handler(req, res) {
     if (!vin) return err(res, 'Vehicle VIN required')
     const { data: vehicle } = await supabase.from('inventory').select('*').eq('vin', vin).single()
     if (!vehicle) return err(res, 'Vehicle not found in inventory')
+    if (vehicle.hidden) return err(res, 'This vehicle is no longer available.', 409)
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', session.user_id).single()
     const { count } = await supabase.from('deals').select('*', { count: 'exact', head: true })
     const deal_number = 'D' + String((count || 0) + 1).padStart(4, '0')

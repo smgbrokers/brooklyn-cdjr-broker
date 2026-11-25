@@ -48,7 +48,34 @@ export default async function handler(req, res) {
     const taken = new Set()
     for (const d of dealRows || []) { if (d.status === 'Application') pending.add(d.vin); else taken.add(d.vin) }
     const flagged = data.map(v => ({ ...v, credit_pending: pending.has(v.vin), unavailable: taken.has(v.vin) }))
-    return ok(res, session.role === 'admin' ? flagged : flagged.filter(v => !v.unavailable))
+    return ok(res, session.role === 'admin' ? flagged : flagged.filter(v => !v.unavailable && !v.hidden))
+  }
+
+  // Admin: hide a car from brokers (or show it again). Hidden cars stay hidden when a new CSV is uploaded.
+  if (req.method === 'PUT' && req.query.action === 'hide') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const vin = String((req.body || {}).vin || '').trim()
+    if (!vin) return err(res, 'Choose a car')
+    const hidden = (req.body || {}).hidden === true
+    const { data: car } = await supabase.from('inventory').select('id,vin').eq('vin', vin).single()
+    if (!car) return err(res, 'That car is not in the inventory.', 404)
+    const { error } = await supabase.from('inventory').update({ hidden }).eq('vin', vin)
+    if (error) return err(res, /hidden/.test(String(error.message)) ? 'Hiding cars needs a one-time database update first.' : error.message, 500)
+    return ok(res, { ok: true, vin, hidden })
+  }
+
+  // Admin: remove a car from the inventory now (it comes back if it is still in the next CSV; Hide keeps it out for good)
+  if (req.method === 'POST' && req.query.action === 'remove') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const vin = String((req.body || {}).vin || '').trim()
+    if (!vin) return err(res, 'Choose a car')
+    const { data: car } = await supabase.from('inventory').select('id,vin').eq('vin', vin).single()
+    if (!car) return err(res, 'That car is not in the inventory.', 404)
+    const { error } = await supabase.from('inventory').delete().eq('vin', vin)
+    if (error) return err(res, error.message, 500)
+    return ok(res, { ok: true, vin })
   }
 
   if (req.method === 'POST') {
@@ -56,9 +83,13 @@ export default async function handler(req, res) {
     if (!session) return
     const { rows } = req.body || {}
     if (!rows?.length) return err(res, 'No inventory data provided')
-    // Clear existing inventory
-    await supabase.from('inventory').delete().neq('id', 0)
-    const mapped = rows.filter(r => r['VIN #'] || r['VIN'] || r['vin']).map(r => ({
+    // Look at what is there now before replacing it: where the old rows end, and which cars are hidden (a new upload must not bring those back)
+    const lastOld = await supabase.from('inventory').select('id').order('id', { ascending: false }).limit(1)
+    const maxOldId = Number(lastOld.data && lastOld.data[0] && lastOld.data[0].id) || 0
+    const hiddenNow = await supabase.from('inventory').select('vin').eq('hidden', true)
+    const hiddenVins = new Set((hiddenNow.error ? [] : hiddenNow.data || []).map(r => r.vin))
+    const kept = rows.filter(r => r['VIN #'] || r['VIN'] || r['vin'])
+    const mapped = kept.map(r => ({
       vin:              r['VIN #'] || r['VIN'] || r['vin'] || '',
       stock_num:        r['Stock #'] || r['Stock#'] || r['stock_num'] || '',
       year_make_model:  r['Year Make Model'] || r['YearMakeModel'] || '',
@@ -72,8 +103,21 @@ export default async function handler(req, res) {
       vehicle_sub_type: r['Vehicle Sub Type'] || '',
       age_days:         parseInt(r['Enterprise Age (Days)'] || '0') || 0,
     }))
-    const { error } = await supabase.from('inventory').insert(mapped)
-    if (error) return err(res, 'Import failed: ' + error.message, 500)
+    // "Select Inventory" in the CSV marks the Select cars; a car that was hidden stays hidden
+    const isSelect = v => /select/i.test(String(v == null ? '' : v))
+    const withFlags = mapped.map((m, i) => ({ ...m, select_inventory: isSelect(kept[i]['Select Inventory']), hidden: hiddenVins.has(m.vin) }))
+    let ins = await supabase.from('inventory').insert(withFlags)
+    let flagsSaved = true
+    if (ins.error && /select_inventory|hidden/.test(String(ins.error.message))) { flagsSaved = false; ins = await supabase.from('inventory').insert(mapped) }
+    if (ins.error) return err(res, 'Import failed: ' + ins.error.message, 500)
+    // the new rows are saved: now take out the old ones (until now the old inventory was untouched)
+    if (maxOldId > 0) {
+      const del = await supabase.from('inventory').delete().lte('id', maxOldId)
+      if (del.error) {
+        await supabase.from('inventory').delete().gt('id', maxOldId)
+        return err(res, 'Import failed while replacing the old inventory: ' + del.error.message, 500)
+      }
+    }
     // Remember when this CSV went in, for the "Inventory refreshed" line on the Inventory pages
     const refreshedAt = new Date().toISOString()
     try {
@@ -82,7 +126,7 @@ export default async function handler(req, res) {
       const { error: metaErr } = await supabase.storage.from(META_BUCKET).upload(META_PATH, Buffer.from(JSON.stringify({ refreshed_at: refreshedAt, rows: mapped.length, by: me ? me.name : null })), { contentType: 'application/json', upsert: true })
       if (metaErr) console.error('[inventory] could not record the refresh time:', metaErr.message)
     } catch (e) { console.error('[inventory] could not record the refresh time:', e.message) }
-    return ok(res, { ok: true, inserted: mapped.length, refreshed_at: refreshedAt })
+    return ok(res, { ok: true, inserted: mapped.length, refreshed_at: refreshedAt, select_count: flagsSaved ? withFlags.filter(m => m.select_inventory).length : 0, hidden_kept: flagsSaved ? withFlags.filter(m => m.hidden).length : 0, flags_saved: flagsSaved })
   }
 
   return err(res, 'Method not allowed', 405)
