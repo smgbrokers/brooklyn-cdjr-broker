@@ -196,6 +196,8 @@ export default async function handler(req, res) {
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
     await notifyStaff({ type: 'credit_app', dealNumber: deal_number, title: 'Credit application received', body: [applicant.first_name, applicant.last_name].filter(Boolean).join(' ') + ' - ' + (deal.vehicle_desc || 'vehicle') + ' - ' + (broker ? broker.company_name : '') })
+    // Ask for the worksheet in the Docs tab (the form uploads it right after submitting)
+    await supabase.from('deal_docs').insert({ deal_id: deal.id, doc_key: 'worksheet', label: 'Worksheet', max_files: 1, files_count: 0, requested_by: null, requested_by_name: 'Credit application' })
     // Customer ID: store privately, then attach it to the admin email
     let idAttachments = []
     if (idBuf) {

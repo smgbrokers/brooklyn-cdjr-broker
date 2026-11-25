@@ -152,7 +152,7 @@ export default async function handler(req, res) {
     // Tell the deal owner (or everyone on staff if nobody has claimed it)
     const { data: all } = await supabase.from('deal_docs').select('id,files_count').eq('deal_id', deal.id)
     const others = (all || []).filter(r => r.id !== item.id)
-    const completed = item.files_count === 0 && others.every(r => r.files_count >= 1)
+    const completed = item.files_count === 0 && others.every(r => r.files_count >= 1) && !(item.doc_key === 'worksheet' && others.length === 0)
     const { data: broker } = await supabase.from('brokers').select('id,company_name').eq('id', deal.broker_id).single()
     const who = broker ? broker.company_name : 'The broker'
     await notifyStaff(completed
@@ -169,7 +169,7 @@ export default async function handler(req, res) {
     if (!deal) return err(res, 'Deal not found', 404)
     if (!isAdmin) {
       if (String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
-      if (deal.status !== 'Approved') return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
+      if (!['Application', 'Approved'].includes(deal.status)) return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
     }
     await supabase.storage.from(BUCKET).remove([f.file_path])
     const { error } = await supabase.from('deal_doc_files').delete().eq('id', f.id)
