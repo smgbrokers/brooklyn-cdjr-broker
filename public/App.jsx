@@ -1015,14 +1015,14 @@ function CreditTab({dealNumber}){
 }
 function DealModal({deal,onClose,onStatusChange,onToggleAvailable,staff,me,onAssign,startTab,onDealPatch}){
   const pre=!!deal&&['Request','Dead'].includes(deal.status);
-  const[tab,setTab]=useState(startTab||(pre?'status':'assignment')),[closing,setClosing]=useState(false),[gr,setGr]=useState(null),[declining,setDeclining]=useState(false);
+  const[tab,setTab]=useState(startTab||'status'),[closing,setClosing]=useState(false),[gr,setGr]=useState(null),[declining,setDeclining]=useState(false);
   async function askGetReady(){try{const r=await apiFetch('porter?action=deal_card&deal_number='+encodeURIComponent(deal.deal_number));if(r&&r.card){onStatusChange(deal.deal_number,'Approved');return;}}catch(e){}setGr({inspection:false});}
   if(!deal)return null;
   const availDt=deal.vehicle_available_at?new Date(deal.vehicle_available_at).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}):null;
   const sum=deal.doc_summary,docsNeed=!!sum&&sum.requested>0&&sum.received<sum.requested;
   const lbl={fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6};
   const card={background:'#F8FAFC',borderRadius:12,padding:16};
-  const tabs=[['assignment','Assignment'],['credit','Credit'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')],['status','Deal Status'],['car','Car Status'],['notes','Notes'],['log','Log']];
+  const tabs=[['status','Deal Status'],['credit','Credit'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')],['car','Car Status'],['notes','Notes'],['assignment','Assignment'],['log','Log']];
   return <Modal title={'Deal #'+deal.deal_number} onClose={onClose} extraWide>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:18}}>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
