@@ -14,6 +14,13 @@ async function getBrokerMap() {
   return map
 }
 
+// What a broker may see of a deal: the invoice name and size only once the car is marked available, never where it is stored
+const brokerView = d => {
+  const { invoice_path, invoice_mime, ...rest } = d
+  const show = !!d.vehicle_available && !!invoice_path
+  return { ...rest, invoice_name: show ? d.invoice_name || null : null, invoice_size: show ? d.invoice_size || null : null, invoice_uploaded_at: show ? d.invoice_uploaded_at || null : null }
+}
+
 async function withDocSummary(list) {
   try {
     const ids = (list || []).map(d => d.id)
@@ -49,6 +56,8 @@ export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   await migrateLegacyStatuses()
+  // an invoice link opened in a new tab carries the token in the address (as the Docs screen does)
+  if (req.method === 'GET' && req.query.action === 'invoice' && req.query._t && !(req.headers && req.headers.authorization)) req.headers = { ...(req.headers || {}), authorization: 'Bearer ' + req.query._t }
 
   const action = req.query.action
   const body = req.body || {}
@@ -86,7 +95,7 @@ export default async function handler(req, res) {
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      return ok(res, await withDocSummary(filterBrokerDeals(session, data, req.query.owner)))
+      return ok(res, await withDocSummary(filterBrokerDeals(session, data, req.query.owner).map(brokerView)))
     }
   }
 
@@ -391,9 +400,74 @@ export default async function handler(req, res) {
     }
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
-      if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) })
+      let invoice = null
+      if (deal.invoice_path) {
+        try {
+          const { data: blob } = await supabase.storage.from('deal-docs').download(deal.invoice_path)
+          if (blob) invoice = { filename: deal.invoice_name || 'invoice.pdf', content: Buffer.from(await blob.arrayBuffer()), contentType: deal.invoice_mime || 'application/octet-stream' }
+        } catch (e) { console.error('[invoice] could not attach it to the email:', e.message) }
+      }
+      if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) }, invoice)
     }
     return ok(res, { ok: true, deal: updates, car, notified })
+  }
+
+  // ---- the invoice for a car: attached by the office, downloaded by the broker once the car is marked available ----
+  const INV_BUCKET = 'deal-docs'
+  const INV_MAX = 3200000
+  const INV_TYPES = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', tif: 'image/tiff', tiff: 'image/tiff', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', csv: 'text/csv' }
+  const invSafeName = n => String(n).split('').map(ch => ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_'.includes(ch) ? ch : '_')).join('').slice(-80)
+  const invNeedsSql = m => /invoice_/.test(String(m)) ? 'Attaching an invoice needs a one-time database update first.' : String(m)
+  if (req.method === 'GET' && action === 'invoice') {
+    const session = await requireAny(req, res)
+    if (!session) return
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', req.query.deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    if (session.role !== 'admin' && !brokerCanSee(session, deal)) return err(res, 'Forbidden', 403)
+    if (!deal.invoice_path || (session.role !== 'admin' && !deal.vehicle_available)) return err(res, 'No invoice has been attached to this deal.', 404)
+    const { data: signed, error: signErr } = await supabase.storage.from(INV_BUCKET).createSignedUrl(deal.invoice_path, 120)
+    if (signErr || !signed || !signed.signedUrl) return err(res, 'Could not open the invoice', 500)
+    res.setHeader('Location', signed.signedUrl)
+    res.status(302).end()
+    return
+  }
+  if (req.method === 'POST' && action === 'invoice') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', body.deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    const name = String(body.name || '').trim().slice(0, 150)
+    const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+    const mime = INV_TYPES[ext]
+    if (!name || !mime) return err(res, 'That file type is not allowed. Use PDF, JPG, PNG, Word, Excel or a text file.')
+    const buf = Buffer.from(String(body.data || ''), 'base64')
+    if (!buf.length) return err(res, 'That file is empty.')
+    if (buf.length > INV_MAX) return err(res, 'That file is too large (3 MB max). Try a photo instead of a scan.', 413)
+    const path = 'invoices/' + deal.id + '/' + Date.now() + '-' + invSafeName(name)
+    await supabase.storage.createBucket(INV_BUCKET, { public: false })
+    const { error: upErr } = await supabase.storage.from(INV_BUCKET).upload(path, buf, { contentType: mime, upsert: false })
+    if (upErr) return err(res, 'Could not save the invoice. Please try again.', 500)
+    const fields = { invoice_name: name, invoice_path: path, invoice_size: buf.length, invoice_mime: mime, invoice_uploaded_at: new Date().toISOString() }
+    const { error: dbErr } = await supabase.from('deals').update(fields).eq('id', deal.id)
+    if (dbErr) {
+      await supabase.storage.from(INV_BUCKET).remove([path])
+      return err(res, invNeedsSql(dbErr.message), 500)
+    }
+    if (deal.invoice_path) await supabase.storage.from(INV_BUCKET).remove([deal.invoice_path])
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'invoice_added', detail: name })
+    return ok(res, { ok: true, invoice: fields }, 201)
+  }
+  if (req.method === 'POST' && action === 'invoice_remove') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', body.deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    if (!deal.invoice_path) return err(res, 'There is no invoice on this deal.', 404)
+    const { error: dbErr } = await supabase.from('deals').update({ invoice_name: null, invoice_path: null, invoice_size: null, invoice_mime: null, invoice_uploaded_at: null }).eq('id', deal.id)
+    if (dbErr) return err(res, invNeedsSql(dbErr.message), 500)
+    await supabase.storage.from(INV_BUCKET).remove([deal.invoice_path])
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'invoice_removed', detail: deal.invoice_name || '' })
+    return ok(res, { ok: true })
   }
 
   // Staff: correct the payout amounts of a completed deal, or mark its check paid or unpaid

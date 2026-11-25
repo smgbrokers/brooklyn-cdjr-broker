@@ -117,6 +117,23 @@ export async function sendEmailWithAttachment(to, subject, body, attachmentHtml,
   } catch(e) { console.error('Email error:', e.message) }
 }
 
+// Plain-text email with files attached (used for the car invoice)
+export async function sendEmailWithFiles(to, subject, body, files = []) {
+  if (!to) return
+  try {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '465'),
+      secure: true,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    })
+    await transporter.sendMail({
+      from: `"${process.env.SMTP_FROM_NAME || 'Brooklyn CDJR'}" <${process.env.SMTP_USER}>`,
+      to, subject, text: body, attachments: files
+    })
+  } catch (e) { console.error('Email error:', e.message) }
+}
+
 export async function notifyAdminsNewRequest(deal, broker) {
   const { data: admins } = await supabase
     .from('admins')
@@ -136,11 +153,12 @@ export async function notifyBrokerRequestReceived(deal, broker) {
   await sendEmail(broker.email, subject, body)
 }
 
-export async function notifyBrokerVehicleAvailable(deal, broker) {
+export async function notifyBrokerVehicleAvailable(deal, broker, invoice) {
   if (!broker.email) return
   const subject = `Vehicle Available — Please Submit Your Credit Application`
   const body = `Hi ${broker.contact_name},\n\nGreat news! The vehicle you requested is confirmed available.\n\nDeal #: ${deal.deal_number}\nCustomer: ${deal.customer_name}\nVehicle: ${deal.vehicle_desc}\nStock #: ${deal.stock_num}\nMSRP: ${deal.msrp}\n\nNEXT STEP: Log in and submit the credit application.\n\nhttps://brooklyn-cdjr-broker.vercel.app\n\n— Brooklyn CDJR Team`
-  await sendEmail(broker.email, subject, body)
+  if (invoice && invoice.content) await sendEmailWithFiles(broker.email, subject, body + '\n\nThe invoice for this vehicle is attached. You can also download it any time from your broker portal.', [invoice])
+  else await sendEmail(broker.email, subject, body)
 }
 
 export function generateCreditAppHtml(app, deal, broker) {

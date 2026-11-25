@@ -45,6 +45,9 @@ export default async function handler(req, res) {
     vehicle_desc: deal.vehicle_desc, stock_num: deal.stock_num, vin: deal.vin, status: deal.status,
     request_date: deal.request_date, app_date: deal.app_date, approved_date: deal.approved_date,
     assigned_to_name: staffName, broker_name: broker ? broker.company_name : null,
+    vehicle_available: !!deal.vehicle_available,
+    invoice_name: deal.invoice_path && (isAdmin || deal.vehicle_available) ? deal.invoice_name || null : null,
+    invoice_size: deal.invoice_path && (isAdmin || deal.vehicle_available) ? deal.invoice_size || null : null,
   }
 
   if (action === 'pdf') {
