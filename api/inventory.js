@@ -1,9 +1,35 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny, requireAdmin } from './_helpers.js'
 
+// When the inventory CSV was last uploaded: remembered in the private storage bucket (no database change needed)
+const META_BUCKET = 'deal-docs'
+const META_PATH = 'system/inventory-refresh.json'
+async function readMeta() {
+  try {
+    const { data, error } = await supabase.storage.from(META_BUCKET).download(META_PATH)
+    if (!error && data) {
+      const j = JSON.parse(await data.text())
+      if (j && j.refreshed_at) return j
+    }
+  } catch (e) { /* nothing recorded yet */ }
+  // Not recorded yet (uploaded before this existed): use when the rows were created, if the table keeps that
+  try {
+    const { data: rows } = await supabase.from('inventory').select('created_at').order('created_at', { ascending: false }).limit(1)
+    if (rows && rows[0] && rows[0].created_at) return { refreshed_at: new Date(rows[0].created_at).toISOString(), rows: null, by: null }
+  } catch (e) { /* the table has no created_at */ }
+  return null
+}
+
 export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+
+  if (req.method === 'GET' && req.query.action === 'meta') {
+    const session = await requireAny(req, res)
+    if (!session) return
+    const meta = await readMeta()
+    return ok(res, meta || { refreshed_at: null })
+  }
 
   if (req.method === 'GET') {
     const session = await requireAny(req, res)
@@ -48,7 +74,15 @@ export default async function handler(req, res) {
     }))
     const { error } = await supabase.from('inventory').insert(mapped)
     if (error) return err(res, 'Import failed: ' + error.message, 500)
-    return ok(res, { ok: true, inserted: mapped.length })
+    // Remember when this CSV went in, for the "Inventory refreshed" line on the Inventory pages
+    const refreshedAt = new Date().toISOString()
+    try {
+      const { data: me } = await supabase.from('admins').select('name').eq('id', session.user_id).single()
+      await supabase.storage.createBucket(META_BUCKET, { public: false })
+      const { error: metaErr } = await supabase.storage.from(META_BUCKET).upload(META_PATH, Buffer.from(JSON.stringify({ refreshed_at: refreshedAt, rows: mapped.length, by: me ? me.name : null })), { contentType: 'application/json', upsert: true })
+      if (metaErr) console.error('[inventory] could not record the refresh time:', metaErr.message)
+    } catch (e) { console.error('[inventory] could not record the refresh time:', e.message) }
+    return ok(res, { ok: true, inserted: mapped.length, refreshed_at: refreshedAt })
   }
 
   return err(res, 'Method not allowed', 405)
