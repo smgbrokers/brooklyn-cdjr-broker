@@ -5,7 +5,7 @@ import { logEvent } from './_audit.js'
 import { brokerCanSee, brokerRecipients, filterBrokerDeals } from './_team.js'
 import { computePayout, buildStats } from './_payout.js'
 import { buildPulse } from './_pulse.js'
-import { addCarToBoard } from './_porter.js'
+import { addCarToBoard, buildCardTitle } from './_porter.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -477,6 +477,63 @@ export default async function handler(req, res) {
     await supabase.storage.from(INV_BUCKET).remove([deal.invoice_path])
     await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'invoice_removed', detail: deal.invoice_name || '' })
     return ok(res, { ok: true })
+  }
+
+  // ---- switch the car on a deal for another one from the inventory (office only) ----
+  if (req.method === 'PUT' && action === 'switch_car') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', body.deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    if (deal.status === 'Completed') return err(res, 'The car on a completed deal cannot be switched.')
+    const vin = String(body.vin || '').trim()
+    if (!vin) return err(res, 'Choose a car')
+    if (vin === String(deal.vin || '')) return err(res, 'That is already the car on this deal.')
+    const { data: car } = await supabase.from('inventory').select('*').eq('vin', vin).single()
+    if (!car) return err(res, 'That car is not in the inventory.', 404)
+    // a car that already has a credit application, or is further along on another deal, needs an explicit OK
+    const { data: others } = await supabase.from('deals').select('deal_number,status').eq('vin', vin).neq('deal_number', deal.deal_number).in('status', ['Application', 'Approved', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed'])
+    if ((others || []).length && body.force !== true) return err(res, 'CAR_IN_USE: ' + others[0].deal_number + ' (' + others[0].status + ')', 409)
+    const was = deal.vehicle_desc || 'the previous car'
+    const now = ((car.year_make_model || '') + ' ' + (car.trim || '')).trim() || 'the new car'
+    const updates = { vin: car.vin, stock_num: car.stock_num || null, vehicle_desc: now, msrp: car.msrp || null }
+    if (body.reset_available === true && deal.vehicle_available) { updates.vehicle_available = false; updates.vehicle_available_at = null }
+    const dropInvoice = body.remove_invoice === true && !!deal.invoice_path
+    if (dropInvoice) Object.assign(updates, { invoice_name: null, invoice_path: null, invoice_size: null, invoice_mime: null, invoice_uploaded_at: null })
+    const { error: upErr } = await supabase.from('deals').update(updates).eq('id', deal.id)
+    if (upErr) return err(res, upErr.message, 500)
+    if (dropInvoice) {
+      await supabase.storage.from(INV_BUCKET).remove([deal.invoice_path])
+      await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'invoice_removed', detail: deal.invoice_name || '' })
+    }
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'car_switched', detail: was + (deal.stock_num ? ' (Stock #' + deal.stock_num + ')' : '') + ' \u2192 ' + now + (car.stock_num ? ' (Stock #' + car.stock_num + ')' : '') })
+    // keep the Get Ready board in step, so the porters prepare the right car
+    let board = false
+    try {
+      const { data: cards } = await supabase.from('porter_cards').select('*').eq('deal_id', deal.id).eq('archived', false).limit(1)
+      const c = cards && cards[0]
+      if (c) {
+        const title = buildCardTitle({ vin: car.vin, model: now, last: c.customer_last, broker: c.broker_name, inspection: c.inspection })
+        await supabase.from('porter_cards').update({ vin: car.vin, model: now, title }).eq('id', c.id)
+        const { data: me } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+        await supabase.from('porter_log').insert({ card_id: c.id, actor_role: 'staff', actor_name: me ? me.name : 'Staff', action: 'car_switched', detail: 'Car switched: ' + was + ' \u2192 ' + now })
+        board = true
+      }
+    } catch (e) { console.error('[switch car] could not update the Get Ready card:', e.message) }
+    // tell the broker (message box and email)
+    let notified = false
+    if (body.notify_broker === true) {
+      const extra = String(body.note || '').trim().slice(0, 500)
+      const what = 'Deal #' + deal.deal_number + (deal.customer_name ? ' for ' + deal.customer_name : '') + ': the vehicle is now the ' + now + (car.stock_num ? ' (Stock #' + car.stock_num + ')' : '') + ', replacing the ' + was + '.'
+      const { error: msgErr } = await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: 'CAR CHANGED - ' + what + (extra ? ' Note: ' + extra : '') })
+      if (msgErr) console.error('[switch car] could not post the message:', msgErr.message)
+      else notified = true
+      try {
+        const { data: bk } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
+        if (bk && bk.email) await sendEmail(await brokerRecipients(bk, deal), 'Brooklyn CDJR - Vehicle changed (Deal #' + deal.deal_number + ')', ['Hi ' + (bk.contact_name || 'there') + ',', '', what, '', 'New vehicle: ' + now, ...(car.stock_num ? ['Stock #: ' + car.stock_num] : []), ...(car.msrp ? ['MSRP: ' + car.msrp] : []), 'VIN: ' + car.vin, ...(extra ? ['', 'Note from the team: ' + extra] : []), '', 'You can reply from the message box in the broker portal: https://brooklyn-cdjr-broker.vercel.app', '', '- Brooklyn CDJR'].join('\n'))
+      } catch (e) { console.error('[switch car] could not send the email:', e.message) }
+    }
+    return ok(res, { ok: true, deal: updates, board_updated: board, invoice_removed: dropInvoice, notified })
   }
 
   // Staff: correct the payout amounts of a completed deal, or mark its check paid or unpaid
