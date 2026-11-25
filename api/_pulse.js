@@ -17,13 +17,22 @@ export async function buildPulse(session) {
     return count || 0
   }
 
+  // Inventory signature: how many cars, how many are hidden, how many are Select.
+  // Hiding, unhiding or a new CSV moves it, so pages that are already open refresh the list.
+  const invSig = async forBroker => {
+    const total = await countOf('inventory')
+    const hidden = await countOf('inventory', q => q.eq('hidden', true))
+    const select = await countOf('inventory', q => q.eq('select_inventory', true))
+    return forBroker ? (total - hidden) * 1000000 + select : total * 1000000 + hidden * 1000 + select
+  }
+
   if (session.role === 'admin') {
     const [deals, events, msgs, notifs, inv, cars] = await Promise.all([
       countOf('deals'),
       maxId('deal_events'),
       maxId('deal_messages'),
       maxId('staff_notifications', q => q.eq('admin_id', session.user_id)),
-      countOf('inventory'),
+      invSig(false),
       maxId('porter_log'),
     ])
     return { deals, events, msgs, notifs, inv, cars }
@@ -40,7 +49,7 @@ export async function buildPulse(session) {
   const [events, msgs, inv, team] = await Promise.all([
     ids.length ? maxId('deal_events', q => q.in('deal_id', ids)) : 0,
     ids.length ? maxId('deal_messages', q => q.in('deal_id', ids)) : 0,
-    countOf('inventory'),
+    invSig(true),
     seesTeam ? teamSig() : '',
   ])
   return { deals: ids.length, events, msgs, inv, team }
