@@ -1,6 +1,7 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny, sendEmail } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
+import { zipSync, strToU8 } from 'fflate'
 import { logEvent } from './_audit.js'
 
 const BUCKET = 'deal-docs'
@@ -20,6 +21,12 @@ const DOC_TYPES = [
   { key: 'misc_1', label: 'Misc 1', max: 1, def: false },
   { key: 'misc_2', label: 'Misc 2', max: 1, def: false },
 ]
+
+// Make a safe file name for inside the ZIP (no slashes, quotes or other characters Windows and Mac dislike)
+const BAD_CHARS = new Set([92, 47, 58, 42, 63, 34, 60, 62, 124])
+function safeName(s) {
+  return Array.from(String(s || '')).map(c => (BAD_CHARS.has(c.charCodeAt(0)) || c.charCodeAt(0) < 32 ? ' ' : c)).join('').replace(/ +/g, ' ').trim().slice(0, 120)
+}
 
 function friendly(error) {
   const m = String((error && error.message) || '')
@@ -56,6 +63,61 @@ export default async function handler(req, res) {
     return
   }
 
+  // Download every file for a deal as one ZIP (staff only). The ZIP is stored privately and the browser is sent a
+  // short-lived link, so big downloads are not squeezed through the 4.5 MB function response limit.
+  if (req.method === 'GET' && action === 'zip') {
+    const t = req.query._t
+    if (!t) return err(res, 'Unauthorized', 401)
+    const { data: zs } = await supabase.from('sessions').select('role,user_id').eq('token', t).gt('expires_at', new Date().toISOString()).single()
+    if (!zs || zs.role !== 'admin') return err(res, 'Unauthorized', 401)
+    const { data: zd } = await supabase.from('deals').select('*').eq('deal_number', req.query.deal_number).single()
+    if (!zd) return err(res, 'Deal not found', 404)
+    const { data: zItems } = await supabase.from('deal_docs').select('*').eq('deal_id', zd.id)
+    const { data: zFiles } = await supabase.from('deal_doc_files').select('*').eq('deal_id', zd.id).order('id', { ascending: true })
+    const labelOf = {}
+    const statusOf = {}
+    for (const i of zItems || []) { labelOf[i.id] = i.label; statusOf[i.id] = i.review_status || 'pending' }
+    const jobs = (zFiles || []).map(f => ({ bucket: BUCKET, path: f.file_path, name: (statusOf[f.deal_doc_id] === 'rejected' ? 'REJECTED - ' : '') + (labelOf[f.deal_doc_id] || 'Document') + ' - ' + (f.file_name || 'file') }))
+    const { data: zApp } = await supabase.from('credit_apps').select('id_file_path,id_file_name').eq('deal_id', zd.id).not('id_file_path', 'is', null).order('id', { ascending: false }).limit(1)
+    if (zApp && zApp[0] && zApp[0].id_file_path) jobs.push({ bucket: 'credit-app-ids', path: zApp[0].id_file_path, name: 'Customer ID - ' + (zApp[0].id_file_name || 'id') })
+    if (!jobs.length) return err(res, 'There are no files to download yet.', 404)
+    const got = await Promise.all(jobs.map(async j => {
+      try {
+        const { data: blob, error } = await supabase.storage.from(j.bucket).download(j.path)
+        if (error || !blob) return null
+        return { j, bytes: new Uint8Array(await blob.arrayBuffer()) }
+      } catch (e) {
+        return null
+      }
+    }))
+    const entries = {}
+    const used = new Set()
+    const missing = []
+    got.forEach((g, k) => {
+      if (!g) { missing.push(jobs[k].name); return }
+      const ext = ((/\.([A-Za-z0-9]{2,5})$/.exec(g.j.path)) || [])[1] || 'bin'
+      const base = safeName(g.j.name.replace(/\.[A-Za-z0-9]{1,5}$/, '')) || 'file'
+      let name = base + '.' + ext.toLowerCase()
+      for (let n = 2; used.has(name.toLowerCase()); n++) name = base + ' (' + n + ').' + ext.toLowerCase()
+      used.add(name.toLowerCase())
+      entries[name] = g.bytes
+    })
+    if (!Object.keys(entries).length) return err(res, 'Could not read the files. Please try again.', 500)
+    const fileCount = Object.keys(entries).length
+    if (missing.length) entries['READ ME - some files could not be included.txt'] = strToU8('These files could not be added to the ZIP:\n\n' + missing.join('\n') + '\n')
+    const zipped = zipSync(entries, { level: 0 })
+    const zipPath = 'zips/' + zd.deal_number + '.zip'
+    await supabase.storage.createBucket(BUCKET, { public: false })
+    const { error: zUpErr } = await supabase.storage.from(BUCKET).upload(zipPath, Buffer.from(zipped), { contentType: 'application/zip', upsert: true })
+    if (zUpErr) return err(res, 'Could not prepare the download: ' + zUpErr.message, 500)
+    const { data: zUrl, error: zUrlErr } = await supabase.storage.from(BUCKET).createSignedUrl(zipPath, 120, { download: 'Deal_' + zd.deal_number + '_documents.zip' })
+    if (zUrlErr || !zUrl || !zUrl.signedUrl) return err(res, 'Could not prepare the download', 500)
+    await logEvent({ dealId: zd.id, role: 'admin', userId: zs.user_id, action: 'docs_zip', detail: fileCount + ' file' + (fileCount === 1 ? '' : 's') })
+    res.setHeader('Location', zUrl.signedUrl)
+    res.status(302).end()
+    return
+  }
+
   const session = await requireAny(req, res)
   if (!session) return
   const isAdmin = session.role === 'admin'
@@ -75,6 +137,11 @@ export default async function handler(req, res) {
     const { data: items, error } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id).order('id', { ascending: true })
     if (error) return err(res, friendly(error), 500)
     const { data: files } = await supabase.from('deal_doc_files').select('*').eq('deal_id', deal.id).order('id', { ascending: true })
+    let hasId = false
+    if (isAdmin) {
+      const { data: idRows } = await supabase.from('credit_apps').select('id_file_path').eq('deal_id', deal.id).not('id_file_path', 'is', null).limit(1)
+      hasId = !!(idRows && idRows.length)
+    }
     const byDoc = {}
     for (const f of files || []) {
       if (!byDoc[f.deal_doc_id]) byDoc[f.deal_doc_id] = []
@@ -82,6 +149,7 @@ export default async function handler(req, res) {
     }
     return ok(res, {
       status: deal.status,
+      has_customer_id: hasId,
       types: DOC_TYPES.map(t => ({ key: t.key, label: t.label, max: t.max, def: t.def })),
       items: (items || []).map(i => ({ id: i.id, doc_key: i.doc_key, label: i.label, max_files: i.max_files, requested_at: i.requested_at, requested_by_name: i.requested_by_name, review_status: i.review_status || 'pending', reject_reason: i.reject_reason || null, reviewed_by_name: i.reviewed_by_name || null, reviewed_at: i.reviewed_at || null, files: byDoc[i.id] || [] })),
     })
