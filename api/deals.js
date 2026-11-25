@@ -166,6 +166,13 @@ export default async function handler(req, res) {
       if (creditAppRecord[k] === '' || creditAppRecord[k] === undefined) creditAppRecord[k] = null
     }
     if (creditAppRecord.dob === '') creditAppRecord.dob = null
+    // Years / months must be whole numbers from 0 to 99; money fields cannot be negative
+    const NUM_KEYS = ['housing_years', 'housing_months', 'years_on_job', 'months_on_job', 'prev_years', 'prev_months']
+    const badNum = v => { if (v === '' || v === null || v === undefined) return false; const n = Number(v); return !Number.isInteger(n) || n < 0 || n > 99 }
+    const badObj = o => !!o && typeof o === 'object' && NUM_KEYS.some(k => badNum(o[k]))
+    const negMoney = o => !!o && typeof o === 'object' && ['monthly_income', 'housing_monthly_pmt'].some(k => /-/.test(String(o[k] || '')))
+    if (badObj(creditAppRecord) || badObj(cosigner) || (business && badNum(business.years_in_business))) return err(res, 'Years and months must be whole numbers between 0 and 99.')
+    if (negMoney(creditAppRecord) || negMoney(cosigner) || (business && /-/.test(String(business.annual_revenue || '')))) return err(res, 'Income, payment and revenue amounts cannot be negative.')
     const { error } = await supabase.from('credit_apps').insert(creditAppRecord)
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
