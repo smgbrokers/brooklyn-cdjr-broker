@@ -1,5 +1,6 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
+import { notifyStaff } from './_notify.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -125,6 +126,7 @@ export default async function handler(req, res) {
       if (newDeal) await supabase.from('deal_notes').insert({ deal_id: newDeal.id, author_role: 'broker', author_id: session.user_id, author_name: broker.company_name, body: String(notes).trim().slice(0, 2000), internal: true })
     }
     await notifyAdminsNewRequest(deal, broker)
+    await notifyStaff({ type: 'new_request', dealNumber: deal_number, title: 'New car request', body: broker.company_name + ' requested ' + (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
     await notifyBrokerRequestReceived(deal, broker)
     return ok(res, { ok: true, deal_number }, 201)
   }
@@ -176,6 +178,7 @@ export default async function handler(req, res) {
     const { error } = await supabase.from('credit_apps').insert(creditAppRecord)
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
+    await notifyStaff({ type: 'credit_app', dealNumber: deal_number, title: 'Credit application received', body: [applicant.first_name, applicant.last_name].filter(Boolean).join(' ') + ' - ' + (deal.vehicle_desc || 'vehicle') + ' - ' + (broker ? broker.company_name : '') })
     // Customer ID: store privately, then attach it to the admin email
     let idAttachments = []
     if (idBuf) {
@@ -220,6 +223,10 @@ export default async function handler(req, res) {
     if (changed) {
       const sysText = hadAssignee ? 'Your file is now being handled by ' + assignee.name + '.' : assignee.name + ' is now working on your file.'
       await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: sysText })
+    }
+    if (changed && String(assignee.id) !== String(session.user_id)) {
+      const { data: byAdmin } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+      await notifyStaff({ type: 'assigned', dealNumber: deal.deal_number, onlyAdminId: assignee.id, title: 'Deal assigned to you', body: (byAdmin ? byAdmin.name : 'A teammate') + ' assigned Deal #' + deal.deal_number + ' (' + deal.customer_name + ') to you' })
     }
     let emailed = false
     if (changed) {

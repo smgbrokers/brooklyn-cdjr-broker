@@ -283,22 +283,30 @@ function NotesPanel({dealNumber,isStaff}){
     <div style={{display:'flex',justifyContent:'flex-end',marginTop:8}}><Btn size='sm' onClick={add} loading={busy} disabled={!text.trim()}>Add note</Btn></div>
   </div>;
 }
-function NotesBell({onOpenDeal}){
-  const[data,setData]=useState({count:0,deals:[]}),[open,setOpen]=useState(false);
-  const refresh=useCallback(async()=>{try{const r=await apiFetch('notes?action=unread');if(r&&Array.isArray(r.deals))setData(r);}catch(e){}},[]);
+function NotificationsBell({onOpenDeal}){
+  const[data,setData]=useState({count:0,items:[],setup_needed:false}),[open,setOpen]=useState(false);
+  const refresh=useCallback(async()=>{try{const r=await apiFetch('notifications');if(r&&Array.isArray(r.items))setData(r);}catch(e){}},[]);
   useEffect(()=>{refresh();const t=setInterval(refresh,25000);const h=()=>refresh();window.addEventListener('notes-seen',h);return()=>{clearInterval(t);window.removeEventListener('notes-seen',h);};},[refresh]);
   const has=data.count>0;
   const ago=t=>{const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' hr ago':Math.round(m/1440)+' d ago';};
+  const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',note:'📝'};
+  function openItem(it){setOpen(false);if(it.kind==='event'&&it.unread){apiFetch('notifications?action=read',{method:'POST',body:{id:it.id}}).then(refresh).catch(()=>{});}if(it.deal)onOpenDeal(it.deal);}
+  function markAll(){apiFetch('notifications?action=read',{method:'POST',body:{all:true}}).then(refresh).catch(()=>{});}
   return <div style={{position:'relative'}}>
     <style>{'@keyframes bellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(14deg)}30%{transform:rotate(-12deg)}45%{transform:rotate(9deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}@keyframes badgePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.7)}50%{box-shadow:0 0 0 7px rgba(239,68,68,0)}}'}</style>
-    <button onClick={()=>setOpen(o=>!o)} title={has?data.count+' new note'+(data.count>1?'s':''):'No new notes'} style={{background:'none',border:'none',cursor:'pointer',fontSize:22,position:'relative',padding:'4px 8px',animation:has?'bellShake 1.6s ease-in-out infinite':'none',transformOrigin:'50% 10%'}}>🔔{has&&<span style={{position:'absolute',top:-2,right:0,background:'#EF4444',color:'#fff',borderRadius:10,fontSize:11,fontWeight:800,padding:'1px 6px',animation:'badgePulse 1.4s infinite'}}>{data.count}</span>}</button>
-    {open&&<><div onClick={()=>setOpen(false)} style={{position:'fixed',inset:0,zIndex:2999}}/><div style={{position:'absolute',right:0,top:42,width:340,maxHeight:420,overflowY:'auto',background:'#fff',borderRadius:12,boxShadow:'0 12px 40px rgba(0,0,0,.3)',zIndex:3000,border:'1px solid #E5E7EB'}}>
-      <div style={{padding:'12px 14px',fontWeight:700,fontSize:13,borderBottom:'1px solid #F3F4F6',color:'#111827'}}>New notes</div>
-      {data.deals.length===0&&<div style={{padding:20,color:'#9CA3AF',fontSize:13,textAlign:'center'}}>All caught up.</div>}
-      {data.deals.map(x=><div key={x.deal.deal_number} onClick={()=>{setOpen(false);onOpenDeal(x.deal);}} style={{padding:'10px 14px',borderBottom:'1px solid #F3F4F6',cursor:'pointer'}}>
-        <div style={{fontSize:13,fontWeight:700,color:'#111827'}}>#{x.deal.deal_number} · {x.deal.customer_name}<span style={{marginLeft:8,background:'#EF4444',color:'#fff',borderRadius:10,fontSize:10,padding:'1px 6px'}}>{x.count}</span></div>
-        <div style={{fontSize:12,color:'#374151',marginTop:2}}>{x.latest.author_name||'Broker'}: {String(x.latest.body).slice(0,90)}</div>
-        <div style={{fontSize:11,color:'#9CA3AF',marginTop:2}}>{x.deal.broker_name} · {ago(x.latest.created_at)}</div>
+    <button onClick={()=>setOpen(o=>!o)} title={has?data.count+' new notification'+(data.count>1?'s':''):'No new notifications'} style={{background:'none',border:'none',cursor:'pointer',fontSize:22,position:'relative',padding:'4px 8px',animation:has?'bellShake 1.6s ease-in-out infinite':'none',transformOrigin:'50% 10%'}}>🔔{has&&<span style={{position:'absolute',top:-2,right:0,background:'#EF4444',color:'#fff',borderRadius:10,fontSize:11,fontWeight:800,padding:'1px 6px',animation:'badgePulse 1.4s infinite'}}>{data.count}</span>}</button>
+    {open&&<><div onClick={()=>setOpen(false)} style={{position:'fixed',inset:0,zIndex:2999}}/><div style={{position:'absolute',right:0,top:42,width:360,maxWidth:'calc(100vw - 24px)',maxHeight:460,overflowY:'auto',background:'#fff',borderRadius:12,boxShadow:'0 12px 40px rgba(0,0,0,.3)',zIndex:3000,border:'1px solid #E5E7EB'}}>
+      <div style={{padding:'12px 14px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid #F3F4F6'}}><span style={{fontWeight:700,fontSize:13,color:'#111827'}}>Notifications</span>{has&&<button onClick={markAll} style={{background:'none',border:'none',color:'#1D4ED8',fontSize:12,fontWeight:600,cursor:'pointer'}}>Mark all read</button>}</div>
+      {data.setup_needed&&<div style={{padding:'8px 14px',fontSize:11,background:'#FEF3C7',color:'#92400E'}}>One-time database update needed to show request and credit app alerts.</div>}
+      {data.items.length===0&&<div style={{padding:24,color:'#9CA3AF',fontSize:13,textAlign:'center'}}>You are all caught up.</div>}
+      {data.items.map(it=><div key={it.kind+it.id} onClick={()=>openItem(it)} style={{padding:'10px 14px',borderBottom:'1px solid #F3F4F6',cursor:'pointer',display:'flex',gap:10,background:it.unread?'#EFF6FF':'#fff',opacity:it.unread?1:.7}}>
+        <div style={{fontSize:20,lineHeight:'24px'}}>{icons[it.type]||'🔔'}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#111827'}}>{it.title}</div>
+          <div style={{fontSize:12,color:'#374151',marginTop:1}}>{it.body}</div>
+          <div style={{fontSize:11,color:'#9CA3AF',marginTop:2}}>{it.deal_number?'#'+it.deal_number+' · ':''}{ago(it.created_at)}</div>
+        </div>
+        {it.unread&&<span style={{width:8,height:8,borderRadius:4,background:'#2563EB',marginTop:8}}/>}
       </div>)}
     </div></>}
   </div>;
@@ -479,7 +487,7 @@ function AdminPortal({user,onLogout}){
   return <div style={{minHeight:"100vh",background:"#F1F5F9",fontFamily:"system-ui,-apple-system,sans-serif"}}>
     <div style={{background:"#0F172A",padding:"0 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <div style={{display:"flex",alignItems:"center",gap:16,padding:"16px 0"}}><span style={{fontSize:26}}>🚗</span><div><div style={{color:"#fff",fontWeight:800,fontSize:18}}>BROOKLYN CDJR</div><div style={{color:"#93C5FD",fontSize:12,letterSpacing:"0.05em"}}>ADMIN PORTAL</div></div></div>
-      <div style={{display:"flex",alignItems:"center",gap:12}}><NotesBell onOpenDeal={d=>setSelDeal(d)}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
+      <div style={{display:"flex",alignItems:"center",gap:12}}><NotificationsBell onOpenDeal={d=>setSelDeal(d)}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
     </div>
     <div style={{background:"#fff",borderBottom:"1px solid #E5E7EB",padding:"0 28px",display:"flex",gap:4,overflowX:"auto"}}>{TAB("dashboard","📊 Dashboard")}{TAB("pipeline","🔄 Pipeline")}{TAB("brokers","👥 Brokers")}{TAB("inventory","🚘 Inventory")}{TAB("settings","⚙️ Settings")}</div>
     <div style={{maxWidth:1200,margin:"0 auto",padding:"28px 20px"}}>
