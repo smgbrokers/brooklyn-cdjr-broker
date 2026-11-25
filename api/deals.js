@@ -8,6 +8,13 @@ async function getBrokerMap() {
   return map
 }
 
+async function getAdminMap() {
+  const { data } = await supabase.from('admins').select('id,name')
+  const map = {}
+  if (data) data.forEach(a => map[a.id] = a)
+  return map
+}
+
 export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
@@ -31,9 +38,10 @@ export default async function handler(req, res) {
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
       const brokerMap = await getBrokerMap()
+      const adminMap = await getAdminMap()
       const flat = data.map(d => {
         const b = brokerMap[d.broker_id] || {}
-        return { ...d, broker_name: b.company_name, broker_code: b.broker_code, broker_contact: b.contact_name, broker_email: b.email }
+        return { ...d, assigned_to_name: (adminMap[d.assigned_to] || {}).name || null, broker_name: b.company_name, broker_code: b.broker_code, broker_contact: b.contact_name, broker_email: b.email }
       })
       return ok(res, flat)
     } else {
@@ -179,6 +187,33 @@ export default async function handler(req, res) {
       for (const admin of admins) await sendEmailWithAttachment(admin.email, subject, text, html, `CreditApp_${deal_number}_${applicant.last_name}.html`, idAttachments)
     }
     return ok(res, { ok: true })
+  }
+
+  // PUT: assign a deal to an admin / fleet manager (and tell the broker)
+  if (req.method === 'PUT' && action === 'assign') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { deal_number, assignee_id } = body
+    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).single()
+    if (!deal) return err(res, 'Deal not found', 404)
+    if (['Request', 'Dead'].includes(deal.status)) return err(res, 'A deal can be assigned once the credit application has been received')
+    const targetId = (assignee_id === 'me' || assignee_id === undefined || assignee_id === null) ? session.user_id : parseInt(assignee_id)
+    if (!targetId) return err(res, 'Choose who to assign the deal to')
+    const { data: assignee } = await supabase.from('admins').select('id,name').eq('id', targetId).single()
+    if (!assignee) return err(res, 'That user was not found', 404)
+    const changed = String(deal.assigned_to || '') !== String(assignee.id)
+    const { error: assignErr } = await supabase.from('deals').update({ assigned_to: assignee.id, assigned_at: new Date().toISOString() }).eq('id', deal.id)
+    if (assignErr) return err(res, assignErr.message.includes('assigned_') ? 'The database needs the assignment update first (assigned_to column missing).' : assignErr.message, 500)
+    let emailed = false
+    if (changed) {
+      const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
+      if (broker && broker.email) {
+        const text = `Hi ${broker.contact_name || broker.company_name},\n\nYour credit application for ${deal.customer_name} on the ${deal.vehicle_desc} (Deal #${deal.deal_number}) was successfully received, and ${assignee.name} will be working on your file.\n\nYou can follow the status any time in the broker portal: https://brooklyn-cdjr-broker.vercel.app\n\n— Brooklyn CDJR Team`
+        await sendEmail(broker.email, `Brooklyn CDJR — Credit application received (Deal #${deal.deal_number})`, text)
+        emailed = true
+      }
+    }
+    return ok(res, { ok: true, assigned_to: assignee.id, assigned_to_name: assignee.name, message: changed ? (emailed ? `Assigned to ${assignee.name} — broker notified` : `Assigned to ${assignee.name}`) : `Already assigned to ${assignee.name}` })
   }
 
   // PUT: update deal status

@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     const token = generateToken()
     const expires = new Date(Date.now() + SESSION_HOURS * 3600000).toISOString()
     await supabase.from('sessions').insert({ token, role: 'admin', user_id: admin.id, expires_at: expires })
-    return ok(res, { token, role: 'admin', name: admin.name, email: admin.email, username: admin.username })
+    return ok(res, { token, role: 'admin', name: admin.name, email: admin.email, username: admin.username, admin_id: admin.id, admin_role: admin.role || 'admin' })
   }
 
   // Broker login

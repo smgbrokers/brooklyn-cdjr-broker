@@ -10,19 +10,23 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const session = await requireAdmin(req, res)
     if (!session) return
-    const { data } = await supabase.from('admins').select('id,username,name,email,notify_email,created_at').order('id')
-    return ok(res, data)
+    const { data } = await supabase.from('admins').select('*').order('id')
+    return ok(res, (data || []).map(({ password, ...rest }) => ({ ...rest, role: rest.role || 'admin' })))
   }
 
   if (req.method === 'POST') {
     const session = await requireAdmin(req, res)
     if (!session) return
+    const { data: me } = await supabase.from('admins').select('*').eq('id', session.user_id).single()
+    if (me && me.role === 'fleet_manager') return err(res, 'Only admins can add accounts', 403)
     const { username, name, email, password, notify_email } = body
+    const isFleet = String(body.role || '').toLowerCase().replace(/\s+/g, '_') === 'fleet_manager'
     if (!username || !name || !email) return err(res, 'Username, name, and email required')
     if (!password || password.length < 8) return err(res, 'Password must be at least 8 characters')
     const { data: existing } = await supabase.from('admins').select('id').or(`username.eq.${username},email.eq.${email}`)
     if (existing?.length) return err(res, 'Username or email already in use')
-    await supabase.from('admins').insert({ username, name, email, password: hashPassword(password), notify_email: notify_email !== false })
+    const { error: insErr } = await supabase.from('admins').insert({ username, name, email, password: hashPassword(password), notify_email: notify_email !== false, ...(isFleet ? { role: 'fleet_manager' } : {}) })
+    if (insErr) return err(res, insErr.message.includes('role') ? 'The database needs the Fleet Manager update first (role column missing).' : insErr.message, 500)
     return ok(res, { ok: true, message: `Admin ${name} created` }, 201)
   }
 
@@ -58,6 +62,8 @@ export default async function handler(req, res) {
   if (req.method === 'DELETE') {
     const session = await requireAdmin(req, res)
     if (!session) return
+    const { data: meDel } = await supabase.from('admins').select('*').eq('id', session.user_id).single()
+    if (meDel && meDel.role === 'fleet_manager') return err(res, 'Only admins can remove accounts', 403)
     if (body.id === session.user_id) return err(res, 'Cannot delete your own account')
     await supabase.from('admins').delete().eq('id', body.id)
     return ok(res, { ok: true })
