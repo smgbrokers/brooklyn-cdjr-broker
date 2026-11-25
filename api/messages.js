@@ -3,9 +3,9 @@ import { cors, ok, err, requireAny } from './_helpers.js'
 import { brokerCanSee } from './_team.js'
 
 const MAX_LEN = 2000
-const LISTED_STATUSES = ['Application', 'Approved', 'Declined', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed']
+const LISTED_STATUSES = ['Request', 'Application', 'Approved', 'Declined', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed']
 // Messaging is open once a credit app is in (not Request/Dead) AND a team member has claimed the deal (a declined deal always stays open, so the broker can read why)
-const isActive = d => !!d && (!!d.assigned_to || d.status === 'Declined') && d.status !== 'Request' && d.status !== 'Dead'
+const isActive = d => !!d && d.status !== 'Dead' && (d.status === 'Request' ? !!d.vehicle_available : (!!d.assigned_to || d.status === 'Declined'))
 const CLOSED = 'Messaging opens once the credit application has been received and claimed by a team member.'
 
 function friendly(error) {

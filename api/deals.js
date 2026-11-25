@@ -408,6 +408,15 @@ export default async function handler(req, res) {
         } catch (e) { console.error('[invoice] could not attach it to the email:', e.message) }
       }
       if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) }, invoice)
+      // Also tell the broker in their message box (a mention of the invoice only when it really went out with the email)
+      {
+        const vehicle = deal.vehicle_desc || 'vehicle'
+        const note = 'Deal #' + deal.deal_number + (deal.customer_name ? ' for ' + deal.customer_name : '') + '.' + (deal.status === 'Request' ? ' You can submit the credit application now.' : '')
+        const invoiceSent = !!invoice && !!broker?.email
+        const line = 'CAR AVAILABLE - Great news! The ' + vehicle + ' you requested is available! Note: ' + note + (invoiceSent ? ' Invoice: Please check your email - we have sent you the invoice.' : '')
+        const { error: availErr } = await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: line })
+        if (availErr) console.error('[available] could not post the message:', availErr.message)
+      }
     }
     return ok(res, { ok: true, deal: updates, car, notified })
   }
