@@ -374,11 +374,26 @@ export default async function handler(req, res) {
       const { data: me } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
       car = await addCarToBoard(deal, { inspection: body.needs_inspection === true, by: me ? me.name : 'Staff' })
     }
+    // Declined: tell the broker in their message box (and by email), with the office's note
+    let notified = false
+    if (status === 'Declined' && deal.status !== 'Declined') {
+      const note = String(body.decline_note || '').trim().slice(0, 500)
+      const what = 'Deal #' + deal.deal_number + (deal.customer_name ? ' for ' + deal.customer_name : '') + ' was declined.'
+      const { error: msgErr } = await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: 'DEAL DECLINED - ' + what + (note ? ' Note: ' + note : '') })
+      if (msgErr) console.error('[decline] could not post the message:', msgErr.message)
+      else notified = true
+      try {
+        const { data: bk } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
+        if (bk && bk.email) await sendEmail(await brokerRecipients(bk, deal), 'Brooklyn CDJR - Deal declined (Deal #' + deal.deal_number + ')', ['Hi ' + (bk.contact_name || 'there') + ',', '', what, ...(note ? ['', 'Note from the team: ' + note] : []), '', 'You can reply from the message box in the broker portal: https://brooklyn-cdjr-broker.vercel.app', '', '- Brooklyn CDJR'].join('\n'))
+      } catch (e) {
+        console.error('[decline] could not send the email:', e.message)
+      }
+    }
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) })
     }
-    return ok(res, { ok: true, deal: updates, car })
+    return ok(res, { ok: true, deal: updates, car, notified })
   }
 
   // Staff: correct the payout amounts of a completed deal, or mark its check paid or unpaid
