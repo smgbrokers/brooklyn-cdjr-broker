@@ -3,6 +3,7 @@ import { cors, ok, err, requireAny } from './_helpers.js'
 
 const MAX_LEN = 2000
 const RECENT_DAYS = 14
+const STAFF_ONLY = 'Notes are internal to the Brooklyn CDJR team. Use Messages to reach us.'
 
 function friendly(error) {
   return String(error.message || '').includes('deal_notes') ? 'Notes need a one-time database update first.' : error.message
@@ -19,13 +20,13 @@ export default async function handler(req, res) {
 
   const session = await requireAny(req, res)
   if (!session) return
-  const isAdmin = session.role === 'admin'
+  // Notes are internal: staff (admins and fleet managers) only. Brokers use Messages.
+  if (session.role !== 'admin') return err(res, STAFF_ONLY, 403)
   const action = req.query.action
   const body = req.body || {}
 
-  // Admin bell: deals that have notes this admin has not seen yet
+  // Bell: deals that have notes this person has not seen yet
   if (req.method === 'GET' && action === 'unread') {
-    if (!isAdmin) return err(res, 'Forbidden', 403)
     const since = new Date(Date.now() - RECENT_DAYS * 86400000).toISOString()
     const { data: notes, error } = await supabase.from('deal_notes').select('*').gt('created_at', since).order('created_at', { ascending: false }).limit(300)
     if (error) return err(res, friendly(error), 500)
@@ -60,9 +61,8 @@ export default async function handler(req, res) {
     return ok(res, { count: unread.length, deals: list })
   }
 
-  // Admin opened a deal: mark its notes as seen
+  // Opened a deal: mark its notes as seen
   if (req.method === 'POST' && action === 'seen') {
-    if (!isAdmin) return err(res, 'Forbidden', 403)
     const deal = await loadDeal(body.deal_number)
     if (!deal) return err(res, 'Deal not found', 404)
     const { error } = await supabase.from('note_views').upsert({ admin_id: session.user_id, deal_id: deal.id, seen_at: new Date().toISOString() }, { onConflict: 'admin_id,deal_id' })
@@ -70,35 +70,24 @@ export default async function handler(req, res) {
     return ok(res, { ok: true })
   }
 
-  // Read a deal's notes (staff: all; broker: own deal only, never internal notes)
+  // Read a deal's notes (includes the note the broker typed when requesting the car)
   if (req.method === 'GET') {
     const deal = await loadDeal(req.query.deal_number)
     if (!deal) return err(res, 'Deal not found', 404)
-    if (!isAdmin && String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
-    let query = supabase.from('deal_notes').select('*').eq('deal_id', deal.id).order('created_at', { ascending: true })
-    if (!isAdmin) query = query.eq('internal', false)
-    const { data, error } = await query
+    const { data, error } = await supabase.from('deal_notes').select('*').eq('deal_id', deal.id).order('created_at', { ascending: true })
     if (error) return err(res, friendly(error), 500)
     return ok(res, data || [])
   }
 
-  // Add a note
+  // Add an internal note
   if (req.method === 'POST') {
     const text = String(body.body || '').trim()
     if (!text) return err(res, 'Write a note first')
     if (text.length > MAX_LEN) return err(res, 'That note is too long (2000 characters max)')
     const deal = await loadDeal(body.deal_number)
     if (!deal) return err(res, 'Deal not found', 404)
-    if (!isAdmin && String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
-    let authorName = null
-    if (isAdmin) {
-      const { data: a } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
-      authorName = a ? a.name : 'Brooklyn CDJR'
-    } else {
-      const { data: b } = await supabase.from('brokers').select('id,company_name').eq('id', session.user_id).single()
-      authorName = b ? b.company_name : 'Broker'
-    }
-    const { error } = await supabase.from('deal_notes').insert({ deal_id: deal.id, author_role: isAdmin ? 'admin' : 'broker', author_id: session.user_id, author_name: authorName, body: text, internal: isAdmin && body.internal === true })
+    const { data: a } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+    const { error } = await supabase.from('deal_notes').insert({ deal_id: deal.id, author_role: 'admin', author_id: session.user_id, author_name: a ? a.name : 'Brooklyn CDJR', body: text, internal: true })
     if (error) return err(res, friendly(error), 500)
     return ok(res, { ok: true }, 201)
   }

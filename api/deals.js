@@ -122,7 +122,7 @@ export default async function handler(req, res) {
     // Start the notes thread with the broker request note (best effort)
     if (notes && String(notes).trim()) {
       const { data: newDeal } = await supabase.from('deals').select('id').eq('deal_number', deal_number).single()
-      if (newDeal) await supabase.from('deal_notes').insert({ deal_id: newDeal.id, author_role: 'broker', author_id: session.user_id, author_name: broker.company_name, body: String(notes).trim().slice(0, 2000), internal: false })
+      if (newDeal) await supabase.from('deal_notes').insert({ deal_id: newDeal.id, author_role: 'broker', author_id: session.user_id, author_name: broker.company_name, body: String(notes).trim().slice(0, 2000), internal: true })
     }
     await notifyAdminsNewRequest(deal, broker)
     await notifyBrokerRequestReceived(deal, broker)
