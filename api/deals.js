@@ -208,7 +208,7 @@ export default async function handler(req, res) {
   if (req.method === 'PUT' && action === 'assign') {
     const session = await requireAdmin(req, res)
     if (!session) return
-    const { deal_number, assignee_id } = body
+    const { deal_number, assignee_id, confirm_reassign, notify_broker, message } = body
     const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).single()
     if (!deal) return err(res, 'Deal not found', 404)
     if (['Request', 'Dead'].includes(deal.status)) return err(res, 'A deal can be assigned once the credit application has been received')
@@ -218,10 +218,18 @@ export default async function handler(req, res) {
     if (!assignee) return err(res, 'That user was not found', 404)
     const changed = String(deal.assigned_to || '') !== String(assignee.id)
     const hadAssignee = !!deal.assigned_to
+    const isReassign = hadAssignee && changed
+    // Reassigning needs an explicit yes, so a stale screen can never silently take a deal from a colleague
+    if (isReassign && confirm_reassign !== true) {
+      const { data: curOwner } = await supabase.from('admins').select('id,name').eq('id', deal.assigned_to).single()
+      return err(res, 'REASSIGN_CONFIRM: ' + (curOwner ? curOwner.name : 'another team member'), 409)
+    }
+    const notifyBroker = isReassign ? notify_broker !== false : true
+    const extraMsg = isReassign && notifyBroker ? String(message || '').trim().slice(0, 500) : ''
     const { error: assignErr } = await supabase.from('deals').update({ assigned_to: assignee.id, assigned_at: new Date().toISOString() }).eq('id', deal.id)
     if (assignErr) return err(res, assignErr.message.includes('assigned_') ? 'The database needs the assignment update first (assigned_to column missing).' : assignErr.message, 500)
-    if (changed) {
-      const sysText = hadAssignee ? 'Your file is now being handled by ' + assignee.name + '.' : assignee.name + ' is now working on your file.'
+    if (changed && notifyBroker) {
+      const sysText = hadAssignee ? 'Your deal is now being handled by ' + assignee.name + '.' + (extraMsg ? ' ' + extraMsg : '') : assignee.name + ' is now working on your file.'
       await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: sysText })
     }
     if (changed && String(assignee.id) !== String(session.user_id)) {
@@ -229,7 +237,15 @@ export default async function handler(req, res) {
       await notifyStaff({ type: 'assigned', dealNumber: deal.deal_number, onlyAdminId: assignee.id, title: 'Deal assigned to you', body: (byAdmin ? byAdmin.name : 'A teammate') + ' assigned Deal #' + deal.deal_number + ' (' + deal.customer_name + ') to you' })
     }
     let emailed = false
-    if (changed) {
+    if (isReassign && notifyBroker) {
+      const { data: rb } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
+      if (rb && rb.email) {
+        const reText = 'Hi ' + (rb.contact_name || rb.company_name) + ',\n\nYour deal is now being handled by ' + assignee.name + '.' + (extraMsg ? '\n\n' + extraMsg : '') + '\n\nDeal #' + deal.deal_number + ' - ' + deal.customer_name + ' - ' + (deal.vehicle_desc || '') + '\nYou can follow the status any time in the broker portal: https://brooklyn-cdjr-broker.vercel.app\n\n- Brooklyn CDJR Team'
+        await sendEmail(rb.email, 'Brooklyn CDJR - Update on your deal (Deal #' + deal.deal_number + ')', reText)
+        emailed = true
+      }
+    }
+    if (changed && !isReassign) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker && broker.email) {
         const text = `Hi ${broker.contact_name || broker.company_name},\n\nYour credit application for ${deal.customer_name} on the ${deal.vehicle_desc} (Deal #${deal.deal_number}) was successfully received, and ${assignee.name} will be working on your file.\n\nYou can follow the status any time in the broker portal: https://brooklyn-cdjr-broker.vercel.app\n\n— Brooklyn CDJR Team`
