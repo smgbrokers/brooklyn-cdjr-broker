@@ -100,3 +100,28 @@ export async function requirePorterOrStaff(req, res) {
   err(res, 'Session expired', 401)
   return null
 }
+
+// Put a car on the board that is not tied to a deal (picked from inventory or typed in).
+// A car already on the board with the same VIN is not added twice.
+export async function addLooseCarToBoard({ vin, model, customer_last, broker_name, inspection = false, by = null, source = null }) {
+  try {
+    const v = String(vin || '').trim().toUpperCase().slice(0, 30)
+    const m = String(model || '').trim().slice(0, 120)
+    const cl = String(customer_last || '').trim().slice(0, 60)
+    const bn = String(broker_name || '').trim().slice(0, 80)
+    if (!v && !m) return { error: 'Enter a VIN or the vehicle', status: 400 }
+    if (v) {
+      const { data: same, error: se } = await supabase.from('porter_cards').select('*').in('vin', [v, v.toLowerCase()]).eq('archived', false).limit(1)
+      if (se) return { error: porterFriendly(se) }
+      if (same && same[0]) return { exists: true, card: same[0] }
+    }
+    const title = buildCardTitle({ vin: v, model: m, last: cl, broker: bn, inspection })
+    const firstKey = (await getColumns())[0].key
+    const { data: card, error } = await supabase.from('porter_cards').insert({ deal_id: null, deal_number: null, vin: v || null, model: m || null, customer_last: cl || null, broker_name: bn || null, inspection: !!inspection, title, column_key: firstKey, moved_at: new Date().toISOString(), moved_by: by, archived: false, created_by: by }).select().single()
+    if (error) return { error: porterFriendly(error) }
+    await supabase.from('porter_log').insert({ card_id: card.id, actor_role: 'staff', actor_name: by, action: 'created', detail: 'Added to Get Ready' + (source ? ' (' + source + ')' : '') + (inspection ? ' - inspection needed' : ' - no inspection') })
+    return { card }
+  } catch (e) {
+    return { error: e.message }
+  }
+}

@@ -1,6 +1,6 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, generateToken, getToken, hashPassword, checkPassword } from './_helpers.js'
-import { getColumns, loadColumns, seedColumns, porterFriendly, requirePorterOrStaff, addCarToBoard } from './_porter.js'
+import { getColumns, loadColumns, seedColumns, porterFriendly, requirePorterOrStaff, addCarToBoard, addLooseCarToBoard } from './_porter.js'
 import { notifyStaff } from './_notify.js'
 import { logEvent } from './_audit.js'
 import { escLike } from './_team.js'
@@ -136,6 +136,11 @@ export default async function handler(req, res) {
   // Add a deal's car to the board by hand
   if (req.method === 'POST' && action === 'card_add') {
     if (!staffOnly()) return
+    if (!body.deal_number) {
+      const r = await addLooseCarToBoard({ vin: body.vin, model: body.model, customer_last: body.customer_last, broker_name: body.broker_name, inspection: body.inspection === true, by: who.name, source: body.source })
+      if (r.error) return err(res, r.error, r.status || 500)
+      return ok(res, { ok: true, exists: !!r.exists, card: view(r.card) }, r.exists ? 200 : 201)
+    }
     const { data: d } = await supabase.from('deals').select('*').eq('deal_number', body.deal_number).single()
     if (!d) return err(res, 'Deal not found', 404)
     const r = await addCarToBoard(d, { inspection: body.inspection === true, by: who.name })
@@ -262,12 +267,44 @@ export default async function handler(req, res) {
     return ok(res, await publishColumns())
   }
 
+  // An email for a porter's own password reset. It must look like an email and not belong to any other login.
+  const checkEmail = async (raw, exceptId) => {
+    const e = String(raw || '').trim().toLowerCase()
+    if (!e) return { email: null }
+    const at = e.indexOf('@')
+    if (e.length > 120 || e.includes(' ') || at < 1 || at !== e.lastIndexOf('@') || !e.slice(at + 1).includes('.') || e.endsWith('.') || e.slice(at + 1).startsWith('.')) return { error: 'Enter a valid email address' }
+    for (const t of ['admins', 'brokers', 'broker_users']) {
+      const { data } = await supabase.from(t).select('id').ilike('email', escLike(e)).limit(1)
+      if (data && data.length) return { error: 'That email is already used by another login' }
+    }
+    const { data: ps } = await supabase.from('porters').select('id').ilike('email', escLike(e)).limit(5)
+    if ((ps || []).some(x => x.id !== exceptId)) return { error: 'Another porter already has that email' }
+    return { email: e }
+  }
+
+  // Cars the office can put on the board: deals that are approved or later, and the inventory
+  if (req.method === 'GET' && action === 'candidates') {
+    if (!staffOnly()) return
+    const { data: onBoard } = await supabase.from('porter_cards').select('deal_id,vin').eq('archived', false)
+    const boardDeals = new Set((onBoard || []).filter(c => c.deal_id).map(c => c.deal_id))
+    const boardVins = new Set((onBoard || []).filter(c => c.vin).map(c => String(c.vin).toUpperCase()))
+    const { data: ds } = await supabase.from('deals').select('id,deal_number,customer_name,vin,vehicle_desc,status,broker_id').in('status', ['Approved', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up']).order('id', { ascending: false }).limit(300)
+    const { data: bs } = await supabase.from('brokers').select('id,company_name')
+    const bname = {}
+    for (const b of bs || []) bname[b.id] = b.company_name
+    const { data: inv } = await supabase.from('inventory').select('*').order('age_days', { ascending: true }).limit(600)
+    return ok(res, {
+      deals: (ds || []).map(d => ({ deal_number: d.deal_number, customer_name: d.customer_name || '', vin: d.vin || '', vehicle: d.vehicle_desc || '', status: d.status === 'Docs Sent' ? 'eDocs Sent' : d.status, broker: bname[d.broker_id] || '', on_board: boardDeals.has(d.id) || !!(d.vin && boardVins.has(String(d.vin).toUpperCase())) })),
+      inventory: (inv || []).map(v => ({ vin: v.vin || '', stock_num: v.stock_num || '', name: [v.year_make_model, v.trim].filter(Boolean).join(' '), color: v.exterior_color || '', on_board: !!(v.vin && boardVins.has(String(v.vin).toUpperCase())) })),
+    })
+  }
+
   // Porter accounts
   if (req.method === 'GET' && action === 'porters') {
     if (!staffOnly()) return
     const { data, error } = await supabase.from('porters').select('*').order('name', { ascending: true })
     if (error) return err(res, porterFriendly(error), 500)
-    return ok(res, { porters: (data || []).map(p => ({ id: p.id, name: p.name, username: p.username, active: p.active !== false, last_login_at: p.last_login_at || null, created_at: p.created_at })) })
+    return ok(res, { porters: (data || []).map(p => ({ id: p.id, name: p.name, username: p.username, email: p.email || null, active: p.active !== false, last_login_at: p.last_login_at || null, created_at: p.created_at })) })
   }
   if (req.method === 'POST' && action === 'porter_add') {
     if (!staffOnly()) return
@@ -277,10 +314,12 @@ export default async function handler(req, res) {
     if (!name) return err(res, 'Enter the porter name')
     if (!/^[a-z0-9._-]{3,30}$/.test(username)) return err(res, 'Username must be 3 to 30 letters, numbers, dots, dashes or underscores')
     if (password.length < 8) return err(res, 'Password must be at least 8 characters')
+    const em = await checkEmail(body.email, null)
+    if (em.error) return err(res, em.error)
     const { data: taken, error: te } = await supabase.from('porters').select('id').ilike('username', escLike(username)).limit(1)
     if (te) return err(res, porterFriendly(te), 500)
     if (taken && taken.length) return err(res, 'That username is already taken')
-    const { error } = await supabase.from('porters').insert({ name, username, password: hashPassword(password), active: true, created_by: who.name })
+    const { error } = await supabase.from('porters').insert({ name, username, password: hashPassword(password), active: true, created_by: who.name, ...(em.email ? { email: em.email } : {}) })
     if (error) return err(res, porterFriendly(error), 500)
     return ok(res, { ok: true }, 201)
   }
@@ -291,6 +330,7 @@ export default async function handler(req, res) {
     const upd = {}
     let endSessions = false
     if (body.name !== undefined) { const n = String(body.name).trim().slice(0, 80); if (!n) return err(res, 'Enter the porter name'); upd.name = n }
+    if (body.email !== undefined) { const em = await checkEmail(body.email, p.id); if (em.error) return err(res, em.error); upd.email = em.email }
     if (body.active !== undefined) { upd.active = !!body.active; if (!upd.active) endSessions = true }
     if (body.new_password !== undefined) { if (String(body.new_password).length < 8) return err(res, 'Password must be at least 8 characters'); upd.password = hashPassword(String(body.new_password)); endSessions = true }
     if (!Object.keys(upd).length) return err(res, 'Nothing to change')

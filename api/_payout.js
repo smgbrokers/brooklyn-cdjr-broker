@@ -1,6 +1,6 @@
 // Money and statistics for closed deals
-const APPS = ['Application', 'Approved', 'Docs Sent', 'Ready to Pick Up', 'Completed']
-const APPROVED = ['Approved', 'Docs Sent', 'Ready to Pick Up', 'Completed']
+const APPS = ['Application', 'Approved', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed']
+const APPROVED = ['Approved', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 // Dollars typed by a person ($1,234.50 or 1234.5) to whole cents. Returns null if it is not a valid amount.

@@ -19,7 +19,7 @@ export default async function handler(req, res) {
       const { data: deals } = await supabase.from('deals').select('broker_id, status')
       const result = brokers.map(b => {
         const bd = deals.filter(d => d.broker_id === b.id)
-        return { ...b, total_requests: bd.length, total_apps: bd.filter(d => ['Application','Approved','Docs Sent','Ready to Pick Up','Completed'].includes(d.status)).length, total_approved: bd.filter(d => ['Approved','Docs Sent','Ready to Pick Up','Completed'].includes(d.status)).length, total_sold: bd.filter(d => d.status === 'Completed').length }
+        return { ...b, total_requests: bd.length, total_apps: bd.filter(d => ['Application','Approved','All Docs In', 'eDocs Sent', 'Docs Sent','Ready to Pick Up','Completed'].includes(d.status)).length, total_approved: bd.filter(d => ['Approved','All Docs In', 'eDocs Sent', 'Docs Sent','Ready to Pick Up','Completed'].includes(d.status)).length, total_sold: bd.filter(d => d.status === 'Completed').length }
       }).sort((a,b) => b.total_sold - a.total_sold)
       return ok(res, result)
     } else {

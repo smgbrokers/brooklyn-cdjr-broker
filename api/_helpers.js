@@ -255,3 +255,15 @@ export function generateCreditAppHtml(app, deal, broker) {
   </body></html>`;
 }
 
+// "Docs Sent" was renamed "eDocs Sent". Deals still carrying the old name are renamed the first time the server runs.
+let legacyStatusesChecked = false
+export async function migrateLegacyStatuses() {
+  if (legacyStatusesChecked) return
+  legacyStatusesChecked = true
+  try {
+    const { error } = await supabase.from('deals').update({ status: 'eDocs Sent' }).eq('status', 'Docs Sent')
+    if (error) console.error('[status] could not rename Docs Sent to eDocs Sent:', error.message)
+  } catch (e) {
+    console.error('[status] rename failed:', e.message)
+  }
+}

@@ -1,5 +1,5 @@
 import supabase from './_db.js'
-import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
+import { migrateLegacyStatuses, cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
 import { logEvent } from './_audit.js'
 import { brokerCanSee, brokerRecipients, filterBrokerDeals } from './_team.js'
@@ -48,6 +48,7 @@ async function getAdminMap() {
 export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+  await migrateLegacyStatuses()
 
   const action = req.query.action
   const body = req.body || {}
@@ -336,8 +337,9 @@ export default async function handler(req, res) {
   if (req.method === 'PUT' && action === 'status') {
     const session = await requireAdmin(req, res)
     if (!session) return
-    const { deal_number, status, vehicle_available } = body
-    const valid = ['Request','Application','Approved','Declined','Docs Sent','Ready to Pick Up','Completed','Dead']
+    const { deal_number, vehicle_available } = body
+    const status = body.status === 'Docs Sent' ? 'eDocs Sent' : body.status
+    const valid = ['Request','Application','Approved','Declined','All Docs In','eDocs Sent','Ready to Pick Up','Completed','Dead']
     if (status && !valid.includes(status)) return err(res, 'Invalid status')
     const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).single()
     if (!deal) return err(res, 'Deal not found', 404)
@@ -362,7 +364,7 @@ export default async function handler(req, res) {
       if (vehicle_available) updates.vehicle_available_at = new Date().toISOString()
     }
     const { error: upErr } = await supabase.from('deals').update(updates).eq('deal_number', deal_number)
-    if (upErr) return err(res, /bird_dog|short_cod|check_amount/.test(upErr.message) ? 'Recording the payout needs a one-time database update first.' : upErr.message, 500)
+    if (upErr) return err(res, /bird_dog|short_cod|check_amount/.test(upErr.message) ? 'Recording the payout needs a one-time database update first.' : /status_check|check constraint/i.test(upErr.message) ? 'The new statuses need a one-time database update first.' : upErr.message, 500)
     if (payoutFields) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'payout_recorded', detail: 'Bird dog $' + payoutFields.bird_dog_total.toFixed(2) + ', short COD $' + payoutFields.short_cod.toFixed(2) + ', check $' + payoutFields.check_amount.toFixed(2) })
     if (status && status !== deal.status) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'status_changed', detail: deal.status + ' \u2192 ' + status })
     if (vehicle_available !== undefined && !!vehicle_available !== !!deal.vehicle_available) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: vehicle_available ? 'vehicle_confirmed' : 'vehicle_unconfirmed', detail: deal.vehicle_desc || null })

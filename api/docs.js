@@ -8,7 +8,7 @@ import { logEvent } from './_audit.js'
 const BUCKET = 'deal-docs'
 const MAX_BYTES = 3200000
 const FILE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'application/pdf': 'pdf' }
-const AFTER_APPROVAL = ['Approved', 'Docs Sent', 'Ready to Pick Up', 'Completed']
+const AFTER_APPROVAL = ['Approved', 'All Docs In', 'eDocs Sent', 'Docs Sent', 'Ready to Pick Up', 'Completed']
 const SITE = 'https://brooklyn-cdjr-broker.vercel.app'
 
 // What staff can ask the broker for. def = ticked by default on the first request. max = files allowed.
@@ -269,7 +269,9 @@ export default async function handler(req, res) {
     if (error) return err(res, friendly(error), 500)
     await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, name: me ? me.name : null, action: 'doc_accepted', detail: item.label })
     await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: 'Accepted: your ' + item.label + ' was accepted.' })
-    return ok(res, { ok: true })
+    const { data: allDocs } = await supabase.from('deal_docs').select('id,review_status').eq('deal_id', deal.id)
+    const allIn = (allDocs || []).length > 0 && (allDocs || []).every(r => r.review_status === 'accepted')
+    return ok(res, { ok: true, all_accepted: allIn, suggest_all_docs_in: allIn && deal.status === 'Approved' })
   }
 
   // Staff: reject a document with a reason. The broker is told in their chat (highlighted) and by email.

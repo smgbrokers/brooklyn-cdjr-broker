@@ -92,13 +92,22 @@ export default async function handler(req, res) {
         if (tu) { user = tu; role = 'broker' }
       }
     }
+    if (!user) {
+      const { data: pt } = await supabase.from('porters').select('id,name,email').ilike('email', escLike(email)).eq('active', true).single()
+      if (pt) { user = pt; role = 'porter' }
+    }
     if (user) {
       await supabase.from('password_resets').delete().eq('email', email).eq('role', role)
       const token = generateToken()
       const expires = new Date(Date.now() + 3600000).toISOString()
-      await supabase.from('password_resets').insert({ email, role, token, expires_at: expires })
+      let ins = await supabase.from('password_resets').insert({ email, role, token, expires_at: expires })
+      if (ins.error && role === 'porter') {
+        // an older database may only allow admin or broker here: keep it as broker, the reset finds the porter by email
+        ins = await supabase.from('password_resets').insert({ email, role: 'broker', token, expires_at: expires })
+      }
+      if (ins.error) console.error('[auth] could not store the reset token:', ins.error.message)
       const url = `https://brooklyn-cdjr-broker.vercel.app?reset_token=${token}`
-      await sendEmail(email, 'Brooklyn CDJR — Password Reset', `Hi ${user.name},\n\nClick to reset your password (expires in 1 hour):\n\n${url}\n\n— Brooklyn CDJR Team`)
+      await sendEmail(email, 'Brooklyn CDJR — Password Reset', `Hi ${user.name},\n\nClick to reset your password (expires in 1 hour)${role === 'porter' ? '. Afterwards sign in with the Porter Login button at the top right of the sign-in page' : ''}:\n\n${url}\n\n— Brooklyn CDJR Team`)
     }
     return ok(res, { ok: true, message: 'If that email is registered, a reset link has been sent.' })
   }
@@ -116,6 +125,11 @@ export default async function handler(req, res) {
     else {
       await supabase.from('brokers').update({ password: hash }).eq('email', reset.email)
       await supabase.from('broker_users').update({ password: hash }).ilike('email', escLike(reset.email))
+      const { data: pts } = await supabase.from('porters').select('id').ilike('email', escLike(reset.email))
+      if (pts && pts.length) {
+        await supabase.from('porters').update({ password: hash }).ilike('email', escLike(reset.email))
+        await supabase.from('porter_sessions').delete().in('porter_id', pts.map(x => x.id))
+      }
     }
     await supabase.from('password_resets').update({ used: true }).eq('token', token)
     return ok(res, { ok: true, message: 'Password updated. You can now log in.' })
