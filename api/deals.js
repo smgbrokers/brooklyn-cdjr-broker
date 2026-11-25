@@ -207,8 +207,13 @@ export default async function handler(req, res) {
     const { data: assignee } = await supabase.from('admins').select('id,name').eq('id', targetId).single()
     if (!assignee) return err(res, 'That user was not found', 404)
     const changed = String(deal.assigned_to || '') !== String(assignee.id)
+    const hadAssignee = !!deal.assigned_to
     const { error: assignErr } = await supabase.from('deals').update({ assigned_to: assignee.id, assigned_at: new Date().toISOString() }).eq('id', deal.id)
     if (assignErr) return err(res, assignErr.message.includes('assigned_') ? 'The database needs the assignment update first (assigned_to column missing).' : assignErr.message, 500)
+    if (changed) {
+      const sysText = hadAssignee ? 'Your file is now being handled by ' + assignee.name + '.' : assignee.name + ' is now working on your file.'
+      await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: sysText })
+    }
     let emailed = false
     if (changed) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
