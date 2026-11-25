@@ -615,19 +615,29 @@ function CarBoardView({columns,cards,onOpen,onDropCard,canDrag,loading,error}){
     </div>
   </div>;
 }
-function CarActivity({log,note,setNote,onSend,busy,err}){
+function CarActivity({log,note,setNote,onSend,busy,err,initialTab}){
+  const[tab,setTab]=useState(initialTab||'notes');
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const notes=log.filter(l=>l.action==='note'),acts=log.filter(l=>l.action!=='note');
+  const tabBtn=(k,l,n)=><button key={k} type='button' onClick={()=>setTab(k)} style={{flex:1,padding:'9px 12px',border:'none',borderBottom:'3px solid '+(tab===k?'#1D4ED8':'transparent'),background:'none',cursor:'pointer',fontWeight:700,fontSize:13,color:tab===k?'#1D4ED8':'#6B7280'}}>{l}<span style={{marginLeft:6,background:tab===k?'#DBEAFE':'#F3F4F6',color:tab===k?'#1D4ED8':'#6B7280',borderRadius:10,padding:'1px 8px',fontSize:11}}>{n}</span></button>;
   return <div>
-    <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:8}}>Activity and notes</div>
-    <div style={{maxHeight:260,overflowY:'auto',marginBottom:10}}>
-      {log.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No activity yet.</div>}
-      {log.map(l=>l.action==='note'?<div key={l.id} style={{background:l.actor_role==='porter'?'#FEF3C7':'#EFF6FF',borderRadius:10,padding:'8px 12px',marginBottom:8}}><div style={{fontSize:11,color:'#6B7280',marginBottom:2}}><b>{l.actor_name}</b>{l.actor_role==='porter'?' (porter)':' (office)'}{' \u00b7 '}{fmt(l.created_at)}</div><div style={{fontSize:14,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{l.detail}</div></div>:<div key={l.id} style={{fontSize:12,color:'#6B7280',margin:'6px 0'}}>{carIcon[l.action]||''} {l.detail}{' \u00b7 '}{l.actor_name}{' \u00b7 '}{fmt(l.created_at)}</div>)}
-    </div>
-    <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} maxLength={1000} placeholder='Add a note...' style={{width:'100%',boxSizing:'border-box',padding:'10px 12px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,fontFamily:'inherit',resize:'vertical',marginBottom:8}}/>
-    {err&&<div style={{color:'#DC2626',fontSize:13,marginBottom:8}}>{err}</div>}
-    <Btn size='sm' onClick={onSend} loading={busy} disabled={!note.trim()}>Add note</Btn>
+    <div style={{display:'flex',borderBottom:'1px solid #E5E7EB',marginBottom:12}}>{tabBtn('notes','Notes',notes.length)}{tabBtn('activity','Activity',acts.length)}</div>
+    {tab==='notes'&&<>
+      <div style={{maxHeight:240,overflowY:'auto',marginBottom:10}}>
+        {notes.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No notes yet.</div>}
+        {notes.map(l=><div key={l.id} style={{background:l.actor_role==='porter'?'#FEF3C7':'#EFF6FF',borderRadius:10,padding:'8px 12px',marginBottom:8}}><div style={{fontSize:11,color:'#6B7280',marginBottom:2}}><b>{l.actor_name}</b>{l.actor_role==='porter'?' (porter)':' (office)'}{' · '}{fmt(l.created_at)}</div><div style={{fontSize:14,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{l.detail}</div></div>)}
+      </div>
+      <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} maxLength={1000} placeholder='Add a note...' style={{width:'100%',boxSizing:'border-box',padding:'10px 12px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,fontFamily:'inherit',resize:'vertical',marginBottom:8}}/>
+      {err&&<div style={{color:'#DC2626',fontSize:13,marginBottom:8}}>{err}</div>}
+      <Btn size='sm' onClick={onSend} loading={busy} disabled={!note.trim()}>Add note</Btn>
+    </>}
+    {tab==='activity'&&<div style={{maxHeight:300,overflowY:'auto'}}>
+      {acts.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No activity yet.</div>}
+      {acts.map(l=><div key={l.id} style={{display:'flex',gap:10,alignItems:'flex-start',padding:'8px 0',borderBottom:'1px solid #F3F4F6'}}><div style={{width:22,textAlign:'center',fontSize:15}}>{carIcon[l.action]||'•'}</div><div style={{minWidth:0}}><div style={{fontSize:13,color:'#374151',wordBreak:'break-word'}}>{l.detail}</div><div style={{fontSize:11,color:'#9CA3AF',marginTop:2}}>{l.actor_name}{' · '}{fmt(l.created_at)}</div></div></div>)}
+    </div>}
   </div>;
 }
+
 function CarModalView({card,log,columns,staff,onClose,onMove,note,setNote,onSend,busy,err,onOpenDeal,onRemove}){
   const col=columns.find(c=>c.key===card.column_key)||{label:card.column_key,color:'#6B7280'};
   const chip=(t,bg,fg)=><span style={{fontSize:11,fontWeight:700,background:bg,color:fg,borderRadius:10,padding:'3px 10px'}}>{t}</span>;
