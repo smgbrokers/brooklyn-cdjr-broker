@@ -2,7 +2,7 @@ import supabase from './_db.js'
 
 // Record who did what on a deal (this feeds the Log tab).
 // Best effort: a failure here must never break the request that triggered it.
-export async function logEvent({ dealId, dealNumber, role, userId, name, action, detail, dedupeMinutes = 0 }) {
+export async function logEvent({ dealId, dealNumber, role, userId, brokerUserId, name, action, detail, dedupeMinutes = 0 }) {
   try {
     let id = dealId
     if (!id && dealNumber) {
@@ -20,6 +20,10 @@ export async function logEvent({ dealId, dealNumber, role, userId, name, action,
         const { data } = await supabase.from('brokers').select('id,company_name').eq('id', userId).single()
         actorName = data ? data.company_name : null
       }
+    }
+    if (brokerUserId && actorRole === 'broker') {
+      const { data: bu } = await supabase.from('broker_users').select('id,name').eq('id', brokerUserId).single()
+      if (bu) actorName = bu.name + (actorName ? ' (' + actorName + ')' : '')
     }
     if (dedupeMinutes > 0) {
       // Repeat views by the same person within the window are logged once

@@ -2,6 +2,7 @@ import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
 import { logEvent } from './_audit.js'
+import { brokerCanSee, brokerRecipients } from './_team.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -81,7 +82,20 @@ export default async function handler(req, res) {
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      return ok(res, await withDocSummary(data))
+      // Salespeople see only the deals they created. The owner and company admins see the whole company
+      // and can narrow it down with ?owner=me | owner | <team member id>.
+      let rows = data
+      const ownerQ = String(req.query.owner || 'all')
+      if (session.broker_user_id && session.broker_user_role !== 'admin') {
+        rows = data.filter(d => String(d.broker_user_id || '') === String(session.broker_user_id))
+      } else if (ownerQ === 'me') {
+        rows = data.filter(d => (session.broker_user_id ? String(d.broker_user_id || '') === String(session.broker_user_id) : !d.broker_user_id))
+      } else if (ownerQ === 'owner') {
+        rows = data.filter(d => !d.broker_user_id)
+      } else if (/^[0-9]+$/.test(ownerQ)) {
+        rows = data.filter(d => String(d.broker_user_id || '') === ownerQ)
+      }
+      return ok(res, await withDocSummary(rows))
     }
   }
 
@@ -161,6 +175,12 @@ export default async function handler(req, res) {
     const { count } = await supabase.from('deals').select('*', { count: 'exact', head: true })
     const deal_number = 'D' + String((count || 0) + 1).padStart(4, '0')
     const deal = { deal_number, broker_id: session.user_id, vin, stock_num: vehicle.stock_num, vehicle_desc: `${vehicle.year_make_model} ${vehicle.trim}`.trim(), msrp: vehicle.msrp, customer_name, customer_phone: customer_phone || '', customer_email: customer_email || '', status: 'Request', request_date: new Date().toISOString().split('T')[0], notes: notes || '' }
+    if (session.broker_user_id) {
+      const { data: bu } = await supabase.from('broker_users').select('id,name,suspended').eq('id', session.broker_user_id).single()
+      if (!bu || bu.suspended) return err(res, 'Your account is suspended. Please contact your company admin.', 403)
+      deal.broker_user_id = bu.id
+      deal.broker_user_name = bu.name
+    }
     const { error } = await supabase.from('deals').insert(deal)
     if (error) return err(res, error.message, 500)
     // Start the notes thread with the broker request note (best effort)
@@ -169,9 +189,9 @@ export default async function handler(req, res) {
       if (newDeal) await supabase.from('deal_notes').insert({ deal_id: newDeal.id, author_role: 'broker', author_id: session.user_id, author_name: broker.company_name, body: String(notes).trim().slice(0, 2000), internal: true })
     }
     await notifyAdminsNewRequest(deal, broker)
-    await notifyStaff({ type: 'new_request', dealNumber: deal_number, title: 'New car request', body: broker.company_name + ' requested ' + (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
-    await logEvent({ dealNumber: deal_number, role: 'broker', userId: session.user_id, name: broker.company_name, action: 'requested', detail: (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
-    await notifyBrokerRequestReceived(deal, broker)
+    await notifyStaff({ type: 'new_request', dealNumber: deal_number, title: 'New car request', body: broker.company_name + (deal.broker_user_name ? ' (' + deal.broker_user_name + ')' : '') + ' requested ' + (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
+    await logEvent({ dealNumber: deal_number, role: 'broker', userId: session.user_id, brokerUserId: session.broker_user_id, name: broker.company_name, action: 'requested', detail: (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
+    await notifyBrokerRequestReceived(deal, { ...broker, email: await brokerRecipients(broker, deal) })
     return ok(res, { ok: true, deal_number }, 201)
   }
 
@@ -181,7 +201,8 @@ export default async function handler(req, res) {
     if (!session) return
     const { deal_number, ...appData } = body
     if (!deal_number) return err(res, 'deal_number required')
-    const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', deal_number).eq('broker_id', session.user_id).single()
+    const { data: deal0 } = await supabase.from('deals').select('*').eq('deal_number', deal_number).eq('broker_id', session.user_id).single()
+    const deal = deal0 && brokerCanSee(session, deal0) ? deal0 : null
     if (!deal) return err(res, 'Deal not found', 404)
     if (!deal.vehicle_available) return err(res, 'Credit application cannot be submitted until the vehicle has been confirmed available by Brooklyn CDJR.', 403)
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', session.user_id).single()
@@ -223,7 +244,7 @@ export default async function handler(req, res) {
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
     await notifyStaff({ type: 'credit_app', dealNumber: deal_number, title: 'Credit application received', body: [applicant.first_name, applicant.last_name].filter(Boolean).join(' ') + ' - ' + (deal.vehicle_desc || 'vehicle') + ' - ' + (broker ? broker.company_name : '') })
-    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, name: broker ? broker.company_name : null, action: 'credit_app_submitted', detail: ({ individual: 'Individual', individual_cosigner: 'Individual + Co-Signer', business: 'Business', business_cosigner: 'Business + Co-Signer' }[app_type || 'individual'] || 'Individual') + (idBuf ? ', customer ID attached' : '') })
+    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, brokerUserId: session.broker_user_id, name: broker ? broker.company_name : null, action: 'credit_app_submitted', detail: ({ individual: 'Individual', individual_cosigner: 'Individual + Co-Signer', business: 'Business', business_cosigner: 'Business + Co-Signer' }[app_type || 'individual'] || 'Individual') + (idBuf ? ', customer ID attached' : '') })
     // Ask for the worksheet in the Docs tab (the form uploads it right after submitting)
     await supabase.from('deal_docs').insert({ deal_id: deal.id, doc_key: 'worksheet', label: 'Worksheet', max_files: 1, files_count: 0, requested_by: null, requested_by_name: 'Credit application' })
     // Customer ID: store privately, then attach it to the admin email
@@ -298,7 +319,7 @@ export default async function handler(req, res) {
       const { data: rb } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (rb && rb.email) {
         const reText = 'Hi ' + (rb.contact_name || rb.company_name) + ',\n\nYour deal is now being handled by ' + assignee.name + '.' + (extraMsg ? '\n\n' + extraMsg : '') + '\n\nDeal #' + deal.deal_number + ' - ' + deal.customer_name + ' - ' + (deal.vehicle_desc || '') + '\nYou can follow the status any time in the broker portal: https://brooklyn-cdjr-broker.vercel.app\n\n- Brooklyn CDJR Team'
-        await sendEmail(rb.email, 'Brooklyn CDJR - Update on your deal (Deal #' + deal.deal_number + ')', reText)
+        await sendEmail(await brokerRecipients(rb, deal), 'Brooklyn CDJR - Update on your deal (Deal #' + deal.deal_number + ')', reText)
         emailed = true
       }
     }
@@ -306,7 +327,7 @@ export default async function handler(req, res) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker && broker.email) {
         const text = `Hi ${broker.contact_name || broker.company_name},\n\nYour credit application for ${deal.customer_name} on the ${deal.vehicle_desc} (Deal #${deal.deal_number}) was successfully received, and ${assignee.name} will be working on your file.\n\nYou can follow the status any time in the broker portal: https://brooklyn-cdjr-broker.vercel.app\n\n— Brooklyn CDJR Team`
-        await sendEmail(broker.email, `Brooklyn CDJR — Credit application received (Deal #${deal.deal_number})`, text)
+        await sendEmail(await brokerRecipients(broker, deal), `Brooklyn CDJR — Credit application received (Deal #${deal.deal_number})`, text)
         emailed = true
       }
     }
@@ -340,7 +361,7 @@ export default async function handler(req, res) {
     if (vehicle_available !== undefined && !!vehicle_available !== !!deal.vehicle_available) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: vehicle_available ? 'vehicle_confirmed' : 'vehicle_unconfirmed', detail: deal.vehicle_desc || null })
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
-      if (broker?.email) await notifyBrokerVehicleAvailable(deal, broker)
+      if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) })
     }
     return ok(res, { ok: true })
   }

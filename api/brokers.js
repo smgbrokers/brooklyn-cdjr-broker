@@ -1,11 +1,15 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireAny, checkPassword, hashPassword } from './_helpers.js'
+import { handleTeam, updateOwnTeamProfile } from './_team.js'
 
 export default async function handler(req, res) {
   cors(res)
   if (req.method === 'OPTIONS') return res.status(204).end()
 
   const body = req.body || {}
+
+  // Team management (owner and company admins)
+  if (req.query.action && String(req.query.action).startsWith('team')) return handleTeam(req, res, String(req.query.action))
 
   if (req.method === 'GET') {
     const session = await requireAny(req, res)
@@ -20,6 +24,10 @@ export default async function handler(req, res) {
       return ok(res, result)
     } else {
       const { data } = await supabase.from('brokers').select('id,broker_code,username,company_name,contact_name,email,phone,active').eq('id', session.user_id).single()
+      if (data && session.broker_user_id) {
+        const { data: bu } = await supabase.from('broker_users').select('*').eq('id', session.broker_user_id).single()
+        if (bu) return ok(res, { ...data, username: bu.username, contact_name: bu.name, email: bu.email || '', phone: bu.phone || '', user_role: bu.role, user_name: bu.name, broker_user_id: bu.id })
+      }
       return ok(res, data)
     }
   }
@@ -45,6 +53,7 @@ export default async function handler(req, res) {
     const session = await requireAny(req, res)
     if (!session) return
     const isAdmin = session.role === 'admin'
+    if (!isAdmin && session.broker_user_id) return updateOwnTeamProfile(session, body, res)
     const broker_code = body.broker_code
     let broker
     if (isAdmin) {

@@ -1,5 +1,6 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny } from './_helpers.js'
+import { brokerCanSee } from './_team.js'
 
 const MAX_LEN = 2000
 const LISTED_STATUSES = ['Application', 'Approved', 'Declined', 'Docs Sent', 'Ready to Pick Up', 'Completed']
@@ -19,7 +20,7 @@ export default async function handler(req, res) {
   const session = await requireAny(req, res)
   if (!session) return
   const isAdmin = session.role === 'admin'
-  const me = { role: isAdmin ? 'admin' : 'broker', id: session.user_id }
+  const me = isAdmin ? { role: 'admin', id: session.user_id } : session.broker_user_id ? { role: 'broker_user', id: session.broker_user_id } : { role: 'broker', id: session.user_id }
   const action = req.query.action
   const body = req.body || {}
 
@@ -27,15 +28,15 @@ export default async function handler(req, res) {
     const { data } = await supabase.from('deals').select('*').eq('deal_number', dealNumber).single()
     return data || null
   }
-  const allowed = deal => isAdmin || String(deal.broker_id) === String(me.id)
+  const allowed = deal => isAdmin || brokerCanSee(session, deal)
 
   // Inbox: every active conversation this person can see, with last message and unread count
   if (req.method === 'GET' && action === 'conversations') {
     let dq = supabase.from('deals').select('*').in('status', LISTED_STATUSES)
-    if (!isAdmin) dq = dq.eq('broker_id', me.id)
+    if (!isAdmin) dq = dq.eq('broker_id', session.user_id)
     const { data: dealRows, error: dErr } = await dq.limit(1000)
     if (dErr) return err(res, dErr.message, 500)
-    const active = (dealRows || []).filter(isActive)
+    const active = (dealRows || []).filter(d => isActive(d) && (isAdmin || brokerCanSee(session, d)))
     if (!active.length) return ok(res, { me, conversations: [] })
     const ids = active.map(d => d.id)
     const { data: msgs, error: mErr } = await supabase.from('deal_messages').select('*').in('deal_id', ids).order('created_at', { ascending: false }).limit(1000)
@@ -49,7 +50,7 @@ export default async function handler(req, res) {
     for (const m of msgs || []) {
       if (!last[m.deal_id]) last[m.deal_id] = m
       // system lines (like claimed by X) count as unread for brokers only
-      const counts = !mine(m) && (me.role === 'broker' || m.sender_role !== 'system') && new Date(m.created_at).getTime() > (readAt[m.deal_id] || 0)
+      const counts = !mine(m) && (me.role !== 'admin' || m.sender_role !== 'system') && new Date(m.created_at).getTime() > (readAt[m.deal_id] || 0)
       if (counts) unread[m.deal_id] = (unread[m.deal_id] || 0) + 1
     }
     const bMap = {}
@@ -114,8 +115,12 @@ export default async function handler(req, res) {
       const { data: a } = await supabase.from('admins').select('id,name').eq('id', me.id).single()
       senderName = a ? a.name : 'Brooklyn CDJR'
     } else {
-      const { data: b } = await supabase.from('brokers').select('id,company_name').eq('id', me.id).single()
+      const { data: b } = await supabase.from('brokers').select('id,company_name').eq('id', session.user_id).single()
       senderName = b ? b.company_name : 'Broker'
+      if (session.broker_user_id) {
+        const { data: bu } = await supabase.from('broker_users').select('id,name').eq('id', session.broker_user_id).single()
+        if (bu) senderName = bu.name + ' (' + senderName + ')'
+      }
     }
     const { error } = await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: me.role, sender_id: me.id, sender_name: senderName, body: text })
     if (error) return err(res, friendly(error), 500)

@@ -2,6 +2,7 @@ import supabase from './_db.js'
 import { cors, ok, err, requireAny } from './_helpers.js'
 import { buildSections, renderPdf } from './_credit_app_view.js'
 import { logEvent } from './_audit.js'
+import { brokerCanSee, brokerRecipients } from './_team.js'
 
 // A broker sees their own credit application (read-only) and can download it as a PDF. Staff can use it too.
 export default async function handler(req, res) {
@@ -15,19 +16,19 @@ export default async function handler(req, res) {
   if (action === 'pdf') {
     const t = req.query._t
     if (!t) return err(res, 'Unauthorized', 401)
-    const { data: sess } = await supabase.from('sessions').select('role,user_id').eq('token', t).gt('expires_at', new Date().toISOString()).single()
+    const { data: sess } = await supabase.from('sessions').select('*').eq('token', t).gt('expires_at', new Date().toISOString()).single()
     if (!sess) return err(res, 'Unauthorized', 401)
     who = sess
   } else {
     const s = await requireAny(req, res)
     if (!s) return
-    who = { role: s.role, user_id: s.user_id }
+    who = s
   }
   const isAdmin = who.role === 'admin'
 
   const { data: deal } = await supabase.from('deals').select('*').eq('deal_number', req.query.deal_number).single()
   if (!deal) return err(res, 'Deal not found', 404)
-  if (!isAdmin && String(deal.broker_id) !== String(who.user_id)) return err(res, 'Forbidden', 403)
+  if (!isAdmin && !brokerCanSee(who, deal)) return err(res, 'Forbidden', 403)
 
   const { data: broker } = await supabase.from('brokers').select('id,company_name').eq('id', deal.broker_id).single()
   let staffName = null

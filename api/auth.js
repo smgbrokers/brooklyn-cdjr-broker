@@ -1,7 +1,33 @@
 import supabase from './_db.js'
 import { cors, ok, err, generateToken, checkPassword, hashPassword, sendEmail } from './_helpers.js'
+import { escLike } from './_team.js'
 
 const SESSION_HOURS = 12
+
+// A team member (sales or company admin) signing in with their own username or email.
+// Returns true when it has answered the request.
+async function loginTeamMember(res, login, password) {
+  const like = escLike(login)
+  let { data: bu } = await supabase.from('broker_users').select('*').ilike('username', like).single()
+  if (!bu) {
+    const r = await supabase.from('broker_users').select('*').ilike('email', like).single()
+    bu = r.data
+  }
+  if (!bu) return false
+  if (!password) { err(res, 'Password required'); return true }
+  if (!checkPassword(password, bu.password)) { err(res, 'Invalid username or password', 401); return true }
+  if (bu.suspended) { err(res, 'This account is suspended. Please contact your company admin.', 403); return true }
+  const { data: company } = await supabase.from('brokers').select('*').eq('id', bu.broker_id).eq('active', true).single()
+  if (!company) { err(res, 'Your company account is inactive. Please contact Brooklyn CDJR.', 403); return true }
+  await supabase.from('sessions').delete().eq('broker_user_id', bu.id)
+  const token = generateToken()
+  const expires = new Date(Date.now() + SESSION_HOURS * 3600000).toISOString()
+  const { error: sessErr } = await supabase.from('sessions').insert({ token, role: 'broker', user_id: company.id, broker_user_id: bu.id, broker_user_role: bu.role, expires_at: expires })
+  if (sessErr) { err(res, /broker_user/.test(sessErr.message) ? 'Team logins need a one-time database update first.' : 'Session creation failed: ' + sessErr.message, 500); return true }
+  await supabase.from('broker_users').update({ last_login_at: new Date().toISOString() }).eq('id', bu.id)
+  ok(res, { token, role: 'broker', broker_id: company.id, broker_code: company.broker_code, username: bu.username, company_name: company.company_name, contact_name: bu.name, email: bu.email, phone: bu.phone, user_role: bu.role, user_name: bu.name, broker_user_id: bu.id })
+  return true
+}
 
 export default async function handler(req, res) {
   cors(res)
@@ -32,17 +58,23 @@ export default async function handler(req, res) {
       .select('*').eq('active', true)
       .or(`broker_code.eq.${login.toUpperCase()},username.eq.${login},email.eq.${login}`)
       .single()
-    if (!broker) return err(res, 'Account not found. Contact Brooklyn CDJR to get registered.', 401)
+    if (!broker) {
+      // Not a company login: maybe one of their team members
+      if (await loginTeamMember(res, login, password)) return
+      return err(res, 'Account not found. Contact Brooklyn CDJR to get registered.', 401)
+    }
     if (broker.password) {
       if (!password) return err(res, 'Password required')
       if (!checkPassword(password, broker.password)) return err(res, 'Invalid username or password', 401)
     }
-    await supabase.from('sessions').delete().eq('user_id', broker.id).eq('role', 'broker')
+    // Only replace the owner's own session, never a team member's
+    const delOwn = await supabase.from('sessions').delete().eq('user_id', broker.id).eq('role', 'broker').is('broker_user_id', null)
+    if (delOwn.error) await supabase.from('sessions').delete().eq('user_id', broker.id).eq('role', 'broker')
     const token = generateToken()
     const expires = new Date(Date.now() + SESSION_HOURS * 3600000).toISOString()
     const { error: sessErr } = await supabase.from('sessions').insert({ token, role: 'broker', user_id: broker.id, expires_at: expires })
     if (sessErr) return err(res, 'Session creation failed: ' + sessErr.message, 500)
-    return ok(res, { token, role: 'broker', broker_id: broker.id, broker_code: broker.broker_code, username: broker.username, company_name: broker.company_name, contact_name: broker.contact_name, email: broker.email, phone: broker.phone })
+    return ok(res, { token, role: 'broker', broker_id: broker.id, broker_code: broker.broker_code, username: broker.username, company_name: broker.company_name, contact_name: broker.contact_name, email: broker.email, phone: broker.phone, user_role: 'owner', user_name: broker.contact_name || broker.company_name })
   }
 
   // Forgot password
@@ -55,6 +87,10 @@ export default async function handler(req, res) {
     else {
       const { data: broker } = await supabase.from('brokers').select('id,contact_name,email').eq('email', email).eq('active', true).single()
       if (broker) { user = { ...broker, name: broker.contact_name }; role = 'broker' }
+      else {
+        const { data: tu } = await supabase.from('broker_users').select('id,name,email').ilike('email', escLike(email)).eq('suspended', false).single()
+        if (tu) { user = tu; role = 'broker' }
+      }
     }
     if (user) {
       await supabase.from('password_resets').delete().eq('email', email).eq('role', role)
@@ -77,7 +113,10 @@ export default async function handler(req, res) {
     if (!reset) return err(res, 'Reset link is invalid or expired', 400)
     const hash = hashPassword(password)
     if (reset.role === 'admin') await supabase.from('admins').update({ password: hash }).eq('email', reset.email)
-    else await supabase.from('brokers').update({ password: hash }).eq('email', reset.email)
+    else {
+      await supabase.from('brokers').update({ password: hash }).eq('email', reset.email)
+      await supabase.from('broker_users').update({ password: hash }).ilike('email', escLike(reset.email))
+    }
     await supabase.from('password_resets').update({ used: true }).eq('token', token)
     return ok(res, { ok: true, message: 'Password updated. You can now log in.' })
   }

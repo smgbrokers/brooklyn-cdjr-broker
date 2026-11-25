@@ -2,6 +2,7 @@ import supabase from './_db.js'
 import { cors, ok, err, requireAny, sendEmail } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
 import { zipSync, strToU8 } from 'fflate'
+import { brokerCanSee, brokerRecipients } from './_team.js'
 import { logEvent } from './_audit.js'
 
 const BUCKET = 'deal-docs'
@@ -43,7 +44,7 @@ export default async function handler(req, res) {
   if (req.method === 'GET' && action === 'file') {
     const t = req.query._t
     if (!t) return err(res, 'Unauthorized', 401)
-    const { data: sess } = await supabase.from('sessions').select('role,user_id').eq('token', t).gt('expires_at', new Date().toISOString()).single()
+    const { data: sess } = await supabase.from('sessions').select('*').eq('token', t).gt('expires_at', new Date().toISOString()).single()
     if (!sess) return err(res, 'Unauthorized', 401)
     const { data: f } = await supabase.from('deal_doc_files').select('*').eq('id', req.query.id).single()
     if (!f) return err(res, 'File not found', 404)
@@ -53,8 +54,8 @@ export default async function handler(req, res) {
       await supabase.from('deal_doc_files').update({ viewed_at: new Date().toISOString(), viewed_by: sess.user_id, viewed_by_name: vw ? vw.name : null }).eq('id', f.id)
     }
     if (sess.role !== 'admin') {
-      const { data: d } = await supabase.from('deals').select('id,broker_id').eq('id', f.deal_id).single()
-      if (!d || String(d.broker_id) !== String(sess.user_id)) return err(res, 'Forbidden', 403)
+      const { data: d } = await supabase.from('deals').select('*').eq('id', f.deal_id).single()
+      if (!d || !brokerCanSee(sess, d)) return err(res, 'Forbidden', 403)
     }
     const { data: signed, error: signErr } = await supabase.storage.from(BUCKET).createSignedUrl(f.file_path, 120)
     if (signErr || !signed || !signed.signedUrl) return err(res, 'Could not open the file', 500)
@@ -127,7 +128,7 @@ export default async function handler(req, res) {
     const { data } = await supabase.from('deals').select('*').eq('deal_number', dealNumber).single()
     return data || null
   }
-  const allowed = deal => isAdmin || String(deal.broker_id) === String(session.user_id)
+  const allowed = deal => isAdmin || brokerCanSee(session, deal)
 
   // What has been requested for a deal, and what has come in
   if (req.method === 'GET') {
@@ -181,7 +182,7 @@ export default async function handler(req, res) {
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
     if (broker && broker.email) {
       const text = 'Hi ' + (broker.contact_name || broker.company_name) + ',\n\nFor Deal #' + deal.deal_number + ' (' + deal.customer_name + (deal.vehicle_desc ? ' - ' + deal.vehicle_desc : '') + ') we need the following documents:\n\n' + list.map(l => '  - ' + l).join('\n') + '\n' + (note ? '\n' + note + '\n' : '') + '\nPlease upload them in the broker portal: open My Deals, find the deal, and use the Documents section.\n' + SITE + '\n\n- Brooklyn CDJR Team'
-      await sendEmail(broker.email, 'Brooklyn CDJR - Documents needed (Deal #' + deal.deal_number + ')', text)
+      await sendEmail(await brokerRecipients(broker, deal), 'Brooklyn CDJR - Documents needed (Deal #' + deal.deal_number + ')', text)
     }
     return ok(res, { ok: true, requested: list, message: 'Requested ' + list.length + ' document' + (list.length > 1 ? 's' : '') + ' from the broker' }, 201)
   }
@@ -237,7 +238,7 @@ export default async function handler(req, res) {
     }
     await supabase.from('deal_docs').update({ files_count: item.files_count + 1 }).eq('id', item.id)
     if (wasRejected) await supabase.from('deal_docs').update({ review_status: 'pending', reject_reason: null }).eq('id', item.id)
-    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, action: 'doc_uploaded', detail: item.label + ' (' + (f.name || 'file') + ')' + (wasRejected ? ' - replaces the rejected file' : '') })
+    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, brokerUserId: session.broker_user_id, action: 'doc_uploaded', detail: item.label + ' (' + (f.name || 'file') + ')' + (wasRejected ? ' - replaces the rejected file' : '') })
 
     // Tell the deal owner (or everyone on staff if nobody has claimed it)
     const { data: all } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id)
@@ -289,7 +290,7 @@ export default async function handler(req, res) {
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
     if (broker && broker.email) {
       const text = 'Hi ' + (broker.contact_name || broker.company_name) + ',\n\nYour ' + item.label + ' for Deal #' + deal.deal_number + ' (' + deal.customer_name + ') was rejected.\n\nReason: ' + reason + '\n\nPlease upload a corrected file in the broker portal: open My Deals, find the deal, and use the Docs tab.\n' + SITE + '\n\n- Brooklyn CDJR Team'
-      await sendEmail(broker.email, 'Brooklyn CDJR - Document rejected (Deal #' + deal.deal_number + ')', text)
+      await sendEmail(await brokerRecipients(broker, deal), 'Brooklyn CDJR - Document rejected (Deal #' + deal.deal_number + ')', text)
     }
     return ok(res, { ok: true })
   }
@@ -301,12 +302,12 @@ export default async function handler(req, res) {
     const { data: deal } = await supabase.from('deals').select('*').eq('id', f.deal_id).single()
     if (!deal) return err(res, 'Deal not found', 404)
     if (!isAdmin) {
-      if (String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
+      if (!brokerCanSee(session, deal)) return err(res, 'Forbidden', 403)
       const { data: chk } = await supabase.from('deal_docs').select('*').eq('id', f.deal_doc_id).single()
       if (chk && chk.review_status === 'accepted') return err(res, 'This document was already accepted. Please contact the Brooklyn CDJR team if it needs to change.', 403)
       if (!['Application', 'Approved'].includes(deal.status) && !(chk && chk.review_status === 'rejected')) return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
     }
-    await logEvent({ dealId: deal.id, role: isAdmin ? 'admin' : 'broker', userId: session.user_id, action: 'doc_removed', detail: f.file_name || 'a file' })
+    await logEvent({ dealId: deal.id, role: isAdmin ? 'admin' : 'broker', userId: session.user_id, brokerUserId: session.broker_user_id, action: 'doc_removed', detail: f.file_name || 'a file' })
     await supabase.storage.from(BUCKET).remove([f.file_path])
     const { error } = await supabase.from('deal_doc_files').delete().eq('id', f.id)
     if (error) return err(res, friendly(error), 500)
