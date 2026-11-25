@@ -100,7 +100,7 @@ export async function sendEmail(to, subject, body) {
   } catch(e) { console.error('Email error:', e.message) }
 }
 
-export async function sendEmailWithAttachment(to, subject, body, attachmentHtml, filename) {
+export async function sendEmailWithAttachment(to, subject, body, attachmentHtml, filename, extraAttachments = []) {
   if (!to) return
   try {
     const transporter = nodemailer.createTransport({
@@ -112,7 +112,7 @@ export async function sendEmailWithAttachment(to, subject, body, attachmentHtml,
     await transporter.sendMail({
       from: `"${process.env.SMTP_FROM_NAME || 'Brooklyn CDJR'}" <${process.env.SMTP_USER}>`,
       to, subject, text: body,
-      attachments: [{ filename, content: attachmentHtml, contentType: 'text/html' }]
+      attachments: [{ filename, content: attachmentHtml, contentType: 'text/html' }, ...extraAttachments]
     })
   } catch(e) { console.error('Email error:', e.message) }
 }

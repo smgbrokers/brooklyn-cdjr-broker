@@ -26,6 +26,26 @@ function CreditAppForm({onSubmit,onCancel,loading}){
   const[cosigner,setCosigner]=useState(emptyApplicant());
   const[biz,setBiz]=useState(emptyBiz());
   const[notes,setNotes]=useState("");
+  const[idFile,setIdFile]=useState(null),[idErr,setIdErr]=useState("");
+  async function handleIdPick(e){
+    const f=e.target.files&&e.target.files[0];e.target.value="";
+    if(!f)return;setIdErr("");
+    if(!["image/jpeg","image/png","application/pdf"].includes(f.type)){setIdErr("Please choose a JPG, PNG or PDF file.");return;}
+    try{
+      let blob=f,type=f.type;
+      if(f.type!=="application/pdf"){
+        const bmp=await createImageBitmap(f);
+        const scale=Math.min(1,1800/Math.max(bmp.width,bmp.height));
+        const cv=document.createElement("canvas");cv.width=Math.round(bmp.width*scale);cv.height=Math.round(bmp.height*scale);
+        cv.getContext("2d").drawImage(bmp,0,0,cv.width,cv.height);
+        type="image/jpeg";
+        blob=await new Promise(r=>cv.toBlob(r,"image/jpeg",0.85));
+      }
+      if(blob.size>3000000){setIdErr(f.type==="application/pdf"?"That PDF is over 3 MB. Please upload a photo (JPG/PNG) or a smaller PDF.":"That image is too large. Please try a smaller photo.");return;}
+      const data=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.onerror=rej;r.readAsDataURL(blob);});
+      setIdFile({name:f.name,type,size:blob.size,data});
+    }catch(ex){setIdErr("Could not read that file. Please try another.");}
+  }
   const[errors,setErrors]=useState({});
   const[submitted,setSubmitted]=useState(false);
   const isBiz=appType==="business"||appType==="business_cosigner";
@@ -36,7 +56,7 @@ function CreditAppForm({onSubmit,onCancel,loading}){
   const showPrevAddress=(a)=>{const y=parseInt(a.housing_years)||0;const m=parseInt(a.housing_months)||0;return(y*12+m)<24;};
   function validateApplicant(a,prefix){const e={};if(!a.first_name)e[prefix+"first_name"]="Required";if(!a.last_name)e[prefix+"last_name"]="Required";if(!a.ssn)e[prefix+"ssn"]="Required";else if(!validateSSN(a.ssn))e[prefix+"ssn"]="Must be 9 digits (XXX-XX-XXXX)";if(!a.dob)e[prefix+"dob"]="Required";else if(!validateDOB(a.dob))e[prefix+"dob"]="Valid date required (must be 18-100)";if(a.cell_phone&&!validatePhone(a.cell_phone))e[prefix+"cell_phone"]="Invalid phone";if(a.work_phone&&!validatePhone(a.work_phone))e[prefix+"work_phone"]="Invalid phone";if(a.email&&!validateEmail(a.email))e[prefix+"email"]="Invalid email";return e;}
   function validate(){let e={...validateApplicant(primary,"p_")};if(hasCosigner){e={...e,...validateApplicant(cosigner,"c_")};}if(isBiz&&!biz.business_name)e.biz_business_name="Required";return e;}
-  function handleSubmit(){setSubmitted(true);const e=validate();setErrors(e);if(Object.keys(e).length>0)return;onSubmit({app_type:appType,primary,cosigner:hasCosigner?cosigner:null,business:isBiz?biz:null,notes});}
+  function handleSubmit(){setSubmitted(true);const e=validate();setErrors(e);if(Object.keys(e).length>0)return;onSubmit({app_type:appType,primary,cosigner:hasCosigner?cosigner:null,business:isBiz?biz:null,notes,id_file:idFile});}
   useEffect(()=>{if(submitted)setErrors(validate());},[primary,cosigner,biz,submitted]);
   const SHP=(k)=>submitted?errors["p_"+k]:undefined;
   const SHC=(k)=>submitted?errors["c_"+k]:undefined;
@@ -150,6 +170,17 @@ function CreditAppForm({onSubmit,onCancel,loading}){
     </>}
     <ApplicantSection data={primary} onChange={makeHandler(setPrimary)} prefix="pri" label={hasCosigner?(isBiz?"Authorized Signer / Primary":"Primary Applicant"):null} SHfn={SHP}/>
     {hasCosigner&&<ApplicantSection data={cosigner} onChange={makeHandler(setCosigner)} prefix="co" label="Co-Signer" SHfn={SHC}/>}
+    <div style={{marginBottom:16}}>
+      <div style={{fontSize:13,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.05em",borderBottom:"2px solid #F3F4F6",paddingBottom:6,margin:"8px 0 12px"}}>Customer ID</div>
+      <div style={{background:"#F8FAFC",border:"1.5px dashed #94A3B8",borderRadius:12,padding:"14px 16px"}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:6}}>Please upload customer's ID</div>
+        <div style={{fontSize:12,color:"#6B7280",marginBottom:10}}>Driver's license or state ID. JPG, PNG or PDF. Photos are resized automatically; PDFs up to 3 MB.</div>
+        <input id="id-upload" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" onChange={handleIdPick} style={{display:"none"}}/>
+        <label htmlFor="id-upload" style={{display:"inline-block",padding:"8px 18px",background:"#1D4ED8",color:"#fff",borderRadius:8,fontWeight:700,fontSize:13,cursor:"pointer"}}>{idFile?"Replace file":"Choose file"}</label>
+        {idFile&&<span style={{marginLeft:12,fontSize:13,color:"#065F46",fontWeight:600}}>✓ {idFile.name} ({Math.max(1,Math.round(idFile.size/1024))} KB)<button type="button" onClick={()=>setIdFile(null)} style={{marginLeft:8,background:"none",border:"none",color:"#DC2626",cursor:"pointer",fontSize:12,textDecoration:"underline"}}>Remove</button></span>}
+        {idErr&&<div style={{marginTop:8,fontSize:12,color:"#DC2626"}}>{idErr}</div>}
+      </div>
+    </div>
     <Inp label="Notes" value={notes} onChange={setNotes} type="textarea" placeholder="Additional info…"/>
     {submitted&&Object.keys(errors).length>0&&<div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#DC2626"}}>⚠ Please fix the errors above.</div>}
     <div style={{display:"flex",gap:12,justifyContent:"flex-end",paddingTop:16,borderTop:"1px solid #F3F4F6"}}><Btn variant="outline" onClick={onCancel}>Cancel</Btn><Btn variant="success" onClick={handleSubmit} loading={loading}>Submit Application</Btn></div>
@@ -167,7 +198,7 @@ function CreditAppViewer({dealNumber,onClose}){
     {loading&&<div style={{textAlign:"center",padding:60,color:"#9CA3AF"}}>Loading…</div>}
     {error&&<div style={{color:"#EF4444",padding:20}}>{error}</div>}
     {app&&<>
-      <div style={{marginBottom:20}}><a href={`/api/deals?action=credit_app_html&deal_number=${dealNumber}&_t=${token}`} target="_blank" rel="noreferrer"><Btn variant="primary">📄 View / Print as PDF</Btn></a></div>
+      <div style={{marginBottom:20}}><a href={`/api/deals?action=credit_app_html&deal_number=${dealNumber}&_t=${token}`} target="_blank" rel="noreferrer"><Btn variant="primary">📄 View / Print as PDF</Btn></a>{app.id_file_path&&<a href={`/api/deals?action=id_file&deal_number=${dealNumber}&_t=${token}`} target="_blank" rel="noreferrer" style={{marginLeft:10}}><Btn variant="outline">📎 View Customer ID</Btn></a>}</div>
       {section("Personal",<>{field("First Name",app.first_name)}{field("Last Name",app.last_name)}{field("DOB",app.dob)}{field("SSN","XXX-XX-"+String(app.ssn||"").slice(-4))}{field("Cell",app.cell_phone)}{field("Work",app.work_phone)}<div style={{gridColumn:"1/-1"}}>{field("Email",app.email)}</div></>)}
       {section("Housing",<><div style={{gridColumn:"1/-1"}}>{field("Address",`${app.address}, ${app.city}, ${app.state} ${app.zip}`)}</div>{field("Status",app.housing_status)}{field("Monthly Pmt",app.housing_monthly_pmt)}{field("Time at Address",`${app.housing_years||0}y ${app.housing_months||0}m`)}</>)}
       {section("Employment",<>{field("Employer",app.employer)}{field("Title",app.job_title)}{field("Time on Job",`${app.years_on_job||0}y ${app.months_on_job||0}m`)}{field("Income",app.monthly_income)}{field("Type",app.employment_type)}</>)}

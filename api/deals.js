@@ -79,6 +79,23 @@ export default async function handler(req, res) {
     return
   }
 
+  // GET customer ID file (admin only): redirects to a short-lived private link
+  if (req.method === 'GET' && action === 'id_file') {
+    const idToken = req.query._t
+    if (!idToken) return err(res, 'Unauthorized', 401)
+    const { data: idSess } = await supabase.from('sessions').select('id').eq('token', idToken).eq('role', 'admin').gt('expires_at', new Date().toISOString()).single()
+    if (!idSess) return err(res, 'Unauthorized', 401)
+    const { data: idDeal } = await supabase.from('deals').select('id').eq('deal_number', req.query.deal_number).single()
+    if (!idDeal) return err(res, 'Deal not found', 404)
+    const { data: idApp } = await supabase.from('credit_apps').select('id_file_path').eq('deal_id', idDeal.id).not('id_file_path', 'is', null).order('id', { ascending: false }).limit(1).maybeSingle()
+    if (!idApp || !idApp.id_file_path) return err(res, 'No customer ID on file', 404)
+    const { data: signed, error: signErr } = await supabase.storage.from('credit-app-ids').createSignedUrl(idApp.id_file_path, 120)
+    if (signErr || !signed || !signed.signedUrl) return err(res, 'Could not open the file', 500)
+    res.setHeader('Location', signed.signedUrl)
+    res.status(302).end()
+    return
+  }
+
   // POST: submit request
   if (req.method === 'POST' && action === 'request') {
     const session = await requireBroker(req, res)
@@ -110,7 +127,18 @@ export default async function handler(req, res) {
     if (!deal.vehicle_available) return err(res, 'Credit application cannot be submitted until the vehicle has been confirmed available by Brooklyn CDJR.', 403)
     const { data: broker } = await supabase.from('brokers').select('*').eq('id', session.user_id).single()
     // Structure app data for storage
-    const { primary, cosigner, business, app_type, notes } = appData
+    const { primary, cosigner, business, app_type, notes, id_file } = appData
+    const applicant = primary || appData
+    // Customer ID upload: validate before saving anything
+    const ID_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'application/pdf': 'pdf' }
+    let idBuf = null
+    let idExt = null
+    if (id_file && id_file.data) {
+      idExt = ID_TYPES[id_file.type]
+      if (!idExt) return err(res, 'Customer ID must be a JPG, PNG or PDF file')
+      idBuf = Buffer.from(String(id_file.data), 'base64')
+      if (idBuf.length > 3200000) return err(res, 'Customer ID file is too large (3 MB max). Try a photo instead of a scan.', 413)
+    }
     const creditAppRecord = {
       deal_id: deal.id,
       app_type: app_type || 'individual',
@@ -128,12 +156,27 @@ export default async function handler(req, res) {
     const { error } = await supabase.from('credit_apps').insert(creditAppRecord)
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
+    // Customer ID: store privately, then attach it to the admin email
+    let idAttachments = []
+    if (idBuf) {
+      const idPath = `${deal_number}/${Date.now()}-customer-id.${idExt}`
+      try {
+        await supabase.storage.createBucket('credit-app-ids', { public: false })
+        const { error: upErr } = await supabase.storage.from('credit-app-ids').upload(idPath, idBuf, { contentType: id_file.type, upsert: true })
+        if (upErr) console.error('ID upload error:', upErr.message)
+        else {
+          const { error: colErr } = await supabase.from('credit_apps').update({ id_file_path: idPath, id_file_name: String(id_file.name || ('customer-id.' + idExt)).slice(0, 120) }).eq('deal_id', deal.id)
+          if (colErr) console.error('ID column error:', colErr.message)
+        }
+      } catch (e) { console.error('ID upload error:', e.message) }
+      idAttachments = [{ filename: `CustomerID_${deal_number}.${idExt}`, content: idBuf, contentType: id_file.type }]
+    }
     const { data: admins } = await supabase.from('admins').select('name,email').eq('notify_email', true).not('email', 'is', null)
     if (admins) {
       const html = generateCreditAppHtml(appData, deal, broker)
-      const subject = `Credit Application — Deal #${deal_number} — ${appData.first_name} ${appData.last_name}`
-      const text = `A credit application has been submitted.\n\nDeal #: ${deal_number}\nBroker: ${broker.company_name}\nCustomer: ${appData.first_name} ${appData.last_name}\nVehicle: ${deal.vehicle_desc}\n\nLog in: https://brooklyn-cdjr-broker-wrzb.vercel.app`
-      for (const admin of admins) await sendEmailWithAttachment(admin.email, subject, text, html, `CreditApp_${deal_number}_${appData.last_name}.html`)
+      const subject = `Credit Application — Deal #${deal_number} — ${applicant.first_name} ${applicant.last_name}`
+      const text = `A credit application has been submitted.\n\nDeal #: ${deal_number}\nBroker: ${broker.company_name}\nCustomer: ${applicant.first_name} ${applicant.last_name}\nVehicle: ${deal.vehicle_desc}\n\nLog in: https://brooklyn-cdjr-broker-wrzb.vercel.app`
+      for (const admin of admins) await sendEmailWithAttachment(admin.email, subject, text, html, `CreditApp_${deal_number}_${applicant.last_name}.html`, idAttachments)
     }
     return ok(res, { ok: true })
   }
