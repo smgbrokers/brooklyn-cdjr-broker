@@ -9,6 +9,23 @@ async function getBrokerMap() {
   return map
 }
 
+async function withDocSummary(list) {
+  try {
+    const ids = (list || []).map(d => d.id)
+    if (!ids.length) return list
+    const { data } = await supabase.from('deal_docs').select('deal_id,files_count').in('deal_id', ids)
+    const sum = {}
+    for (const r of data || []) {
+      if (!sum[r.deal_id]) sum[r.deal_id] = { requested: 0, received: 0 }
+      sum[r.deal_id].requested++
+      if (r.files_count >= 1) sum[r.deal_id].received++
+    }
+    return list.map(d => ({ ...d, doc_summary: sum[d.id] || { requested: 0, received: 0 } }))
+  } catch (e) {
+    return list
+  }
+}
+
 async function getAdminMap() {
   const { data } = await supabase.from('admins').select('id,name')
   const map = {}
@@ -44,13 +61,13 @@ export default async function handler(req, res) {
         const b = brokerMap[d.broker_id] || {}
         return { ...d, assigned_to_name: (adminMap[d.assigned_to] || {}).name || null, broker_name: b.company_name, broker_code: b.broker_code, broker_contact: b.contact_name, broker_email: b.email }
       })
-      return ok(res, flat)
+      return ok(res, await withDocSummary(flat))
     } else {
       let query = supabase.from('deals').select('*').eq('broker_id', session.user_id).order('created_at', { ascending: false })
       if (req.query.status && req.query.status !== 'All') query = query.eq('status', req.query.status)
       const { data, error } = await query
       if (error) return err(res, error.message, 500)
-      return ok(res, data)
+      return ok(res, await withDocSummary(data))
     }
   }
 
