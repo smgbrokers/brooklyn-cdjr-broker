@@ -95,18 +95,22 @@ export async function updateOwnTeamProfile(session, body, res) {
 export async function handleTeam(req, res, action) {
   const session = await requireAny(req, res)
   if (!session) return
-  if (session.role !== 'broker') return err(res, 'Team management is for broker accounts.', 403)
+  const staff = session.role === 'admin'
+  if (!staff && session.role !== 'broker') return err(res, 'Team management is for broker accounts.', 403)
   const body = req.body || {}
 
-  let actor = { role: 'owner', id: null }
-  if (session.broker_user_id) {
+  // Brooklyn CDJR staff manage any broker's team; brokers manage only their own
+  const companyId = staff ? (req.query.broker_id || body.broker_id) : session.user_id
+  if (!companyId) return err(res, 'broker_id required')
+
+  let actor = staff ? { role: 'staff', id: null } : { role: 'owner', id: null }
+  if (!staff && session.broker_user_id) {
     const { data: me } = await supabase.from('broker_users').select('*').eq('id', session.broker_user_id).single()
     if (!me || me.suspended) return err(res, 'Session expired', 401)
     actor = { role: me.role, id: me.id }
   }
   if (actor.role === 'sales') return err(res, 'Only company admins can manage the team.', 403)
-  const isOwner = actor.role === 'owner'
-  const companyId = session.user_id
+  const isOwner = actor.role === 'owner' || actor.role === 'staff'
   const { data: company } = await supabase.from('brokers').select('*').eq('id', companyId).single()
   if (!company) return err(res, 'Company not found', 404)
 
@@ -153,7 +157,7 @@ export async function handleTeam(req, res, action) {
     if (role === 'admin' && !isOwner) return err(res, 'Only the account owner can add company admins.', 403)
     if (await usernameTaken(username)) return err(res, 'That username is already taken')
     if (email && await emailTaken(email)) return err(res, 'That email is already used by another account')
-    const { data: created, error } = await supabase.from('broker_users').insert({ broker_id: companyId, name, username, email: email || null, phone: phone || null, password: hashPassword(password), role, suspended: false, created_by: isOwner ? (company.contact_name || company.company_name) : 'Company admin' }).select('*').single()
+    const { data: created, error } = await supabase.from('broker_users').insert({ broker_id: companyId, name, username, email: email || null, phone: phone || null, password: hashPassword(password), role, suspended: false, created_by: staff ? 'Brooklyn CDJR staff' : isOwner ? (company.contact_name || company.company_name) : 'Company admin' }).select('*').single()
     if (error) return err(res, teamFriendly(error), 500)
     if (email) {
       await sendEmail(email, 'You have been added to ' + company.company_name + ' on the Brooklyn CDJR broker portal', 'Hi ' + name + ',\n\nYou now have your own login for the Brooklyn CDJR broker portal (' + (role === 'admin' ? 'Admin' : 'Sales') + ').\n\nSign in here: ' + SITE + '\nUsername: ' + username + '\n\nYour company will give you your password. If you forget it, use Forgot password on the sign in page.\n\n- Brooklyn CDJR Team')
