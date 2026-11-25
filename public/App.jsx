@@ -657,6 +657,64 @@ function PorterPortal({porter,onLogout}){
     <div style={{padding:'6px 16px 24px'}}><CarBoard staff={false} onAuthLost={onLogout}/></div>
   </div>;
 }
+const COLUMNS_SQL=`CREATE TABLE IF NOT EXISTS porter_columns (
+  id         SERIAL PRIMARY KEY,
+  col_key    TEXT NOT NULL UNIQUE,
+  label      TEXT NOT NULL,
+  color      TEXT NOT NULL DEFAULT '#6B7280',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  auto_hide  BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE porter_columns ENABLE ROW LEVEL SECURITY;
+NOTIFY pgrst, 'reload schema';`;
+const COLUMN_COLORS=['#3B82F6','#8B5CF6','#EC4899','#EF4444','#F97316','#F59E0B','#10B981','#14B8A6','#06B6D4','#6B7280'];
+
+// Settings > Get Ready Columns: add, rename, recolour, reorder and remove the columns on the Get Ready board
+function ColumnsAdmin({initial}){
+  const[d,setD]=useState(initial||null),[cerr,setCerr]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(''),[label,setLabel]=useState(''),[color,setColor]=useState('#6366F1'),[rm,setRm]=useState(null),[moveTo,setMoveTo]=useState('');
+  const load=useCallback(async()=>{try{setD(await apiFetch('porter?action=columns'));setCerr('');}catch(e){setCerr(e.message);}},[]);
+  useEffect(()=>{if(!initial)load();},[load]);
+  async function act(tag,action,payload){setBusy(tag);setCerr('');setNote('');try{const r=await apiFetch('porter?action='+action,{method:'POST',body:payload});setD(r);return true;}catch(e){setCerr(e.message);return false;}finally{setBusy('');}}
+  async function addColumn(){const nm=label.trim();const okd=await act('add','column_add',{label:nm,color});if(okd){setNote('Added "'+nm+'" at the end of the board.');setLabel('');}}
+  async function removeColumn(){const had=(d.counts||{})[rm.key]||0;const nm=rm.label;const okd=await act('rm','column_remove',{key:rm.key,move_to:moveTo||undefined});if(okd){setNote('Removed "'+nm+'".'+(had>0?' Its cars moved to the column you chose.':''));setRm(null);setMoveTo('');}}
+  const card={background:'#fff',borderRadius:14,padding:24,boxShadow:'0 1px 6px rgba(0,0,0,0.07)',marginBottom:20};
+  const title=<h3 style={{margin:'0 0 8px',fontSize:16,fontWeight:700}}>Get Ready Columns</h3>;
+  if(!d)return <div style={card}>{title}<div style={{color:cerr?'#DC2626':'#9CA3AF',fontSize:14}}>{cerr||'Loading columns...'}</div></div>;
+  const off=!!d.setup_needed,cols=d.columns||[],counts=d.counts||{},others=rm?cols.filter(c=>c.key!==rm.key):[],rmCount=rm?(counts[rm.key]||0):0;
+  const arrow={border:'1px solid #D1D5DB',background:'#fff',borderRadius:5,width:26,height:20,fontSize:10,lineHeight:1,cursor:'pointer',padding:0,color:'#374151'};
+  const dot=(c,sel,onPick,dis)=><button key={c} type='button' title={c} disabled={dis} onClick={onPick} style={{width:18,height:18,borderRadius:'50%',background:c,border:sel?'2px solid #111827':'2px solid #fff',boxShadow:sel?'0 0 0 1px #111827':'0 0 0 1px #E5E7EB',cursor:dis?'not-allowed':'pointer',padding:0}}/>;
+  return <div style={card}>
+    {title}
+    <div style={{fontSize:13,color:'#6B7280',marginBottom:16,lineHeight:1.5}}>These are the columns on the Get Ready board, left to right. New cars start in the <b>first</b> column. Porters and office staff see your changes within a few seconds. Removing a column asks where its cars should go.</div>
+    {off&&<div style={{background:'#FEF3C7',color:'#92400E',borderRadius:8,padding:'12px 14px',fontSize:13,marginBottom:14,lineHeight:1.5}}><b>Editing columns needs a one-time database update.</b> Until then the board uses the standard columns. In Supabase, open the SQL Editor, run this, then reload this page:<pre style={{background:'#fff',border:'1px solid #FDE68A',borderRadius:6,padding:10,fontSize:12,overflowX:'auto',margin:'8px 0',color:'#111827'}}>{COLUMNS_SQL}</pre><Btn variant='outline' onClick={()=>{try{navigator.clipboard.writeText(COLUMNS_SQL);setNote('SQL copied.');}catch(e){}}}>Copy SQL</Btn></div>}
+    {note&&<div style={{background:'#D1FAE5',color:'#065F46',borderRadius:8,padding:'10px 14px',fontSize:13,fontWeight:600,marginBottom:12}}>{note}</div>}
+    {cerr&&!rm&&<div style={{background:'#FEE2E2',color:'#991B1B',borderRadius:8,padding:'10px 14px',fontSize:13,fontWeight:600,marginBottom:12}}>{cerr}</div>}
+    {cols.map((c,i)=>{const n=counts[c.key]||0;return <div key={c.key} style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'10px 12px',marginBottom:8,border:'1.5px solid #E5E7EB',borderLeft:'5px solid '+c.color,borderRadius:10,opacity:off?0.65:1}}>
+      <div style={{display:'flex',flexDirection:'column',gap:2}}>
+        <button type='button' title='Move earlier on the board' disabled={off||!!busy||i===0} onClick={()=>act('l-'+c.key,'column_move',{key:c.key,direction:'left'})} style={{...arrow,opacity:off||i===0?0.4:1}}>▲</button>
+        <button type='button' title='Move later on the board' disabled={off||!!busy||i===cols.length-1} onClick={()=>act('r-'+c.key,'column_move',{key:c.key,direction:'right'})} style={{...arrow,opacity:off||i===cols.length-1?0.4:1}}>▼</button>
+      </div>
+      <input defaultValue={c.label} key={c.key+':'+c.label} disabled={off||!!busy} maxLength={40} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==c.label)act('n-'+c.key,'column_update',{key:c.key,label:v});else e.target.value=c.label;}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur();}} style={{flex:'1 1 180px',minWidth:140,padding:'8px 10px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,fontWeight:600,fontFamily:'inherit'}}/>
+      <div style={{display:'flex',gap:5,flexWrap:'wrap',maxWidth:150}}>{COLUMN_COLORS.map(k=>dot(k,k.toLowerCase()===String(c.color).toLowerCase(),()=>act('c-'+c.key,'column_update',{key:c.key,color:k}),off||!!busy))}</div>
+      <span style={{fontSize:12,fontWeight:700,background:'#F3F4F6',color:'#4B5563',borderRadius:10,padding:'3px 10px',whiteSpace:'nowrap'}}>{n} {n===1?'car':'cars'} here</span>
+      <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#4B5563',cursor:'pointer'}}><input type='checkbox' checked={!!c.auto_hide} disabled={off||!!busy} onChange={e=>act('h-'+c.key,'column_update',{key:c.key,auto_hide:e.target.checked})}/>Hide cars after 7 days</label>
+      <Btn variant='outline' disabled={off||!!busy||cols.length<=1} onClick={()=>{setRm(c);setMoveTo('');setCerr('');setNote('');}} style={{color:'#DC2626',borderColor:'#FCA5A5'}}>Remove</Btn>
+    </div>;})}
+    <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',marginTop:14,paddingTop:14,borderTop:'1px solid #F3F4F6'}}>
+      <input value={label} onChange={e=>setLabel(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&label.trim()&&!off)addColumn();}} disabled={off} maxLength={40} placeholder='New column name, e.g. Detail Shop' style={{flex:'1 1 220px',minWidth:160,padding:'9px 12px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,fontFamily:'inherit'}}/>
+      <div style={{display:'flex',gap:5,flexWrap:'wrap',maxWidth:150}}>{COLUMN_COLORS.map(k=>dot(k,k===color,()=>setColor(k),off))}</div>
+      <Btn onClick={addColumn} loading={busy==='add'} disabled={off||!label.trim()}>+ Add column</Btn>
+    </div>
+    <div style={{fontSize:12,color:'#9CA3AF',marginTop:10}}>Up to 12 columns. The new column goes at the end; use the arrows to move it. "Hide cars after 7 days" suits a finished column such as Delivered: cars leave the board a week after arriving there but stay in the deal's history.</div>
+    {rm&&<Modal title={'Remove "'+rm.label+'"?'} onClose={()=>setRm(null)}>
+      {rmCount>0?<><div style={{fontSize:14,color:'#374151',marginBottom:12,lineHeight:1.5}}><b>{rmCount} {rmCount===1?'car is':'cars are'}</b> in this column. Choose where {rmCount===1?'it':'they'} should go:</div><select value={moveTo} onChange={e=>setMoveTo(e.target.value)} style={{width:'100%',padding:'10px 12px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,marginBottom:16,fontFamily:'inherit'}}><option value=''>Choose a column...</option>{others.map(o=><option key={o.key} value={o.key}>{o.label}</option>)}</select></>:<div style={{fontSize:14,color:'#374151',marginBottom:16,lineHeight:1.5}}>No cars are in this column right now. It will simply be removed from the board.</div>}
+      {cerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:12}}>{cerr}</div>}
+      <div style={{display:'flex',gap:12,justifyContent:'flex-end'}}><Btn variant='outline' onClick={()=>setRm(null)}>Cancel</Btn><Btn onClick={removeColumn} loading={busy==='rm'} disabled={rmCount>0&&!moveTo}>Remove column</Btn></div>
+    </Modal>}
+  </div>;
+}
+
 function PortersAdmin(){
   const blank={name:'',username:'',password:''};
   const[list,setList]=useState(null),[perr,setPerr]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(''),[adding,setAdding]=useState(false),[form,setForm]=useState(blank),[ferr,setFerr]=useState(''),[reset,setReset]=useState(null),[pw,setPw]=useState(''),[rm,setRm]=useState(null);
@@ -743,7 +801,7 @@ function CarStatusTab({deal}){
 }
 function GetReadyPrompt({deal,inspection,setInspection,onClose,onChoose}){
   return <Modal title='Add this car to Get Ready?' onClose={onClose}>
-    <div style={{fontSize:14,color:'#374151',lineHeight:1.6,marginBottom:12}}>Putting the car on the Get Ready board lets the porters prepare it for delivery. It starts in the <b>New Request / RSU Check</b> column.</div>
+    <div style={{fontSize:14,color:'#374151',lineHeight:1.6,marginBottom:12}}>Putting the car on the Get Ready board lets the porters prepare it for delivery. It starts in the first column of the board.</div>
     <label style={{display:'flex',alignItems:'center',gap:10,fontSize:15,fontWeight:700,marginBottom:12,cursor:'pointer',background:'#FFFBEB',border:'1.5px solid #FCD34D',borderRadius:10,padding:'10px 14px'}}><input type='checkbox' checked={inspection} onChange={e=>setInspection(e.target.checked)} style={{width:18,height:18}}/>Needs state inspection</label>
     <div style={{fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',marginBottom:4}}>The card will read</div>
     <div style={{background:'#F8FAFC',border:'1px solid #E5E7EB',borderRadius:8,padding:'10px 12px',fontSize:13,fontWeight:600,color:'#172B4D',marginBottom:16,wordBreak:'break-word'}}>{carTitle({vin:deal.vin,model:deal.vehicle_desc,last:carLast(deal.customer_name),broker:deal.broker_name,inspection})}</div>
@@ -1113,6 +1171,7 @@ function AdminPortal({user,onLogout}){
         <div style={{background:"#fff",borderRadius:14,padding:24,boxShadow:"0 1px 6px rgba(0,0,0,0.07)",marginBottom:20}}><h3 style={{margin:"0 0 20px",fontSize:16,fontWeight:700}}>My Profile</h3><div style={{display:"flex",gap:16,flexWrap:"wrap"}}><Inp half label="Full Name" value={pf.name} onChange={v=>setPF(p=>({...p,name:v}))}/><Inp half label="Email" value={pf.email} onChange={v=>setPF(p=>({...p,email:v}))} type="email"/></div><h4 style={{margin:"8px 0 16px",fontSize:14,fontWeight:700,color:"#374151"}}>Change Password</h4><div style={{display:"flex",gap:16,flexWrap:"wrap"}}><Inp half label="Current Password" value={pf.current_password} onChange={v=>setPF(p=>({...p,current_password:v}))} type="password"/><Inp half label="New Password" value={pf.new_password} onChange={v=>setPF(p=>({...p,new_password:v}))} type="password" hint="Min 8"/><Inp half label="Confirm" value={pf.confirm_password} onChange={v=>setPF(p=>({...p,confirm_password:v}))} type="password"/></div><Btn onClick={async()=>{setL(true);try{await apiFetch("admins",{method:"PUT",body:pf});t2("Profile updated");setPF(p=>({...p,current_password:"",new_password:"",confirm_password:""}));}catch(e){t2(e.message,"error");}finally{setL(false);}}} loading={loading}>Save Changes</Btn></div>
         <div style={{background:"#fff",borderRadius:14,padding:24,boxShadow:"0 1px 6px rgba(0,0,0,0.07)"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}><h3 style={{margin:0,fontSize:16,fontWeight:700}}>Admin Accounts & Notifications</h3>{user.adminRole!=="fleet_manager"&&<Btn size="sm" onClick={()=>setSAA(true)}>+ Add User</Btn>}</div><p style={{fontSize:13,color:"#6B7280",margin:"0 0 16px"}}>Toggle 🔔 to control who gets emailed on new requests and credit apps.</p><table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}><thead><tr style={{color:"#9CA3AF",fontSize:11,textTransform:"uppercase"}}>{["Name","Username","Role","Email","Alerts","Created"].map(h=><th key={h} style={{textAlign:"left",padding:"0 0 10px",fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{admins.map(a=><tr key={a.id} style={{borderTop:"1px solid #F3F4F6"}}><td style={{padding:"12px 0",fontWeight:600}}>{a.name}</td><td style={{padding:"12px 0"}}><code style={{fontSize:12,background:"#F3F4F6",padding:"2px 6px",borderRadius:4}}>{a.username}</code></td><td style={{padding:"12px 0"}}><span style={{fontSize:12,fontWeight:700,padding:"2px 10px",borderRadius:10,background:a.role==="fleet_manager"?"#FEF3C7":"#DBEAFE",color:a.role==="fleet_manager"?"#92400E":"#1E40AF"}}>{a.role==="fleet_manager"?"Fleet Manager":"Admin"}</span></td><td style={{padding:"12px 0",color:"#6B7280"}}>{a.email}</td><td style={{padding:"12px 0"}}><button onClick={()=>toggleNotify(a)} style={{background:a.notify_email?"#ECFDF5":"#F9FAFB",border:`2px solid ${a.notify_email?"#10B981":"#D1D5DB"}`,borderRadius:8,padding:"4px 12px",cursor:"pointer",fontWeight:700,fontSize:12,color:a.notify_email?"#065F46":"#9CA3AF"}}>{a.notify_email?"🔔 On":"🔕 Off"}</button></td><td style={{padding:"12px 0",color:"#9CA3AF",fontSize:12}}>{a.created_at?.split("T")[0]}</td></tr>)}</tbody></table></div>
         {saa&&<Modal title="Add User" onClose={()=>setSAA(false)}><Inp label="Role" value={na.role||"Admin"} onChange={v=>setNA(p=>({...p,role:v}))} options={["Admin","Fleet Manager"]}/><Inp label="Full Name" value={na.name} onChange={v=>setNA(p=>({...p,name:v}))} required/><Inp label="Username" value={na.username} onChange={v=>setNA(p=>({...p,username:v}))} required/><Inp label="Email" value={na.email} onChange={v=>setNA(p=>({...p,email:v}))} type="email" required/><Inp label="Password" value={na.password} onChange={v=>setNA(p=>({...p,password:v}))} type="password" required hint="Min 8"/><Inp label="Confirm" value={na.confirm_password} onChange={v=>setNA(p=>({...p,confirm_password:v}))} type="password" required/><div style={{marginBottom:16}}><label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}><input type="checkbox" checked={na.notify_email} onChange={e=>setNA(p=>({...p,notify_email:e.target.checked}))} style={{width:16,height:16}}/><span style={{fontSize:14,fontWeight:600}}>Receive deal notifications</span></label></div><div style={{display:"flex",gap:12,justifyContent:"flex-end"}}><Btn variant="outline" onClick={()=>setSAA(false)}>Cancel</Btn><Btn onClick={addAdmin} loading={loading} disabled={!na.username||!na.email||na.password.length<8||na.password!==na.confirm_password}>Create Admin</Btn></div></Modal>}
+        <ColumnsAdmin/>
       </>}
     </div>
     {selDeal&&<DealModal key={selDeal.deal_number} deal={selDeal} startTab={selTab} onClose={()=>{setSelDeal(null);setSelTab(null);}} onStatusChange={updateStatus} onDealPatch={patchDeal} onToggleAvailable={toggleAvailable} staff={admins} me={user} onAssign={assignDeal}/>}

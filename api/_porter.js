@@ -1,24 +1,42 @@
 import supabase from './_db.js'
 import { getToken, err } from './_helpers.js'
 
-// The columns of the Get Ready board, left to right
-export const CAR_COLUMNS = [
-  { key: 'new', label: 'New Request / RSU Check', color: '#3B82F6' },
-  { key: 'in_transit', label: 'In Transit', color: '#8B5CF6' },
-  { key: 'issues', label: 'Vehicle With Issues', color: '#EF4444' },
-  { key: 'inspection_done', label: 'Inspection Done', color: '#F59E0B' },
-  { key: 'wash_bay', label: 'Wash Bay', color: '#06B6D4' },
-  { key: 'ready', label: 'Ready for Delivery', color: '#10B981' },
-  { key: 'delivered', label: 'Delivered', color: '#6B7280' },
+// The starting columns of the Get Ready board, left to right. Staff can change them in Settings
+// (they are then kept in the porter_columns table); until then these are used.
+export const DEFAULT_COLUMNS = [
+  { key: 'new', label: 'New Request / RSU Check', color: '#3B82F6', auto_hide: false },
+  { key: 'in_transit', label: 'In Transit', color: '#8B5CF6', auto_hide: false },
+  { key: 'issues', label: 'Vehicle With Issues', color: '#EF4444', auto_hide: false },
+  { key: 'inspection_done', label: 'Inspection Done', color: '#F59E0B', auto_hide: false },
+  { key: 'wash_bay', label: 'Wash Bay', color: '#06B6D4', auto_hide: false },
+  { key: 'ready', label: 'Ready for Delivery', color: '#10B981', auto_hide: false },
+  { key: 'delivered', label: 'Delivered', color: '#6B7280', auto_hide: true },
 ]
-export const colLabel = k => (CAR_COLUMNS.find(c => c.key === k) || {}).label || k
+export const CAR_COLUMNS = DEFAULT_COLUMNS
+export const colLabel = k => (DEFAULT_COLUMNS.find(c => c.key === k) || {}).label || k
+
+// The columns in use: the saved ones, or the starting set when none are saved (or the table is not there yet)
+export async function loadColumns() {
+  const { data, error } = await supabase.from('porter_columns').select('*').order('sort_order', { ascending: true })
+  if (error) return { columns: DEFAULT_COLUMNS, custom: false, error }
+  if (!data || !data.length) return { columns: DEFAULT_COLUMNS, custom: false, error: null }
+  return { columns: data.map(r => ({ key: r.col_key, label: r.label, color: r.color || '#6B7280', auto_hide: !!r.auto_hide })), custom: true, error: null }
+}
+export async function getColumns() {
+  return (await loadColumns()).columns
+}
+export async function seedColumns() {
+  const rows = DEFAULT_COLUMNS.map((c, i) => ({ col_key: c.key, label: c.label, color: c.color, sort_order: i, auto_hide: !!c.auto_hide }))
+  const { error } = await supabase.from('porter_columns').insert(rows)
+  return { error: error || null }
+}
 
 export const PORTER_SETUP_MSG = 'The Get Ready board needs a one-time database update first.'
 // Turns a database error into a plain message. When it is about the porter tables, the real reason is
 // added in brackets (and logged), so a missing table, a missing column and a stale table list can be told apart.
 export function porterFriendly(error) {
   const m = String((error && error.message) || '')
-  if (!/porter_cards|porter_log|porter_sessions|porters/.test(m)) return m
+  if (!/porter_cards|porter_log|porter_sessions|porter_columns|porters/.test(m)) return m
   // The first part of the database address is the Supabase project ID (not a secret): it shows which project the portal is using
   const project = String(process.env.SUPABASE_URL || '').split('//').pop().split('.')[0]
   console.error('[porter] database problem:', m, '| portal is connected to Supabase project:', project || 'unknown')
@@ -46,9 +64,10 @@ export async function addCarToBoard(deal, { inspection = false, by = null } = {}
     if (exErr) return { error: porterFriendly(exErr) }
     if (existing && existing[0]) return { exists: true, card: existing[0] }
     const { data: broker } = await supabase.from('brokers').select('company_name').eq('id', deal.broker_id).single()
+    const firstKey = (await getColumns())[0].key
     const fields = { vin: deal.vin || null, model: deal.vehicle_desc || null, customer_last: lastNameOf(deal.customer_name) || null, broker_name: broker ? broker.company_name : null }
     const title = buildCardTitle({ vin: fields.vin, model: fields.model, last: fields.customer_last, broker: fields.broker_name, inspection })
-    const { data: card, error } = await supabase.from('porter_cards').insert({ deal_id: deal.id, deal_number: deal.deal_number, ...fields, inspection: !!inspection, title, column_key: 'new', moved_at: new Date().toISOString(), moved_by: by, archived: false, created_by: by }).select('*').single()
+    const { data: card, error } = await supabase.from('porter_cards').insert({ deal_id: deal.id, deal_number: deal.deal_number, ...fields, inspection: !!inspection, title, column_key: firstKey, moved_at: new Date().toISOString(), moved_by: by, archived: false, created_by: by }).select('*').single()
     if (error) return { error: porterFriendly(error) }
     await supabase.from('porter_log').insert({ card_id: card.id, actor_role: 'staff', actor_name: by, action: 'created', detail: 'Added to Get Ready' + (inspection ? ' (inspection needed)' : ' (no inspection)') })
     return { card }
