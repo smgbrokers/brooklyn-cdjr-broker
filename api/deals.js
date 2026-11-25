@@ -14,14 +14,21 @@ async function withDocSummary(list) {
   try {
     const ids = (list || []).map(d => d.id)
     if (!ids.length) return list
-    const { data } = await supabase.from('deal_docs').select('deal_id,files_count').in('deal_id', ids)
+    const { data } = await supabase.from('deal_docs').select('*').in('deal_id', ids)
     const sum = {}
     for (const r of data || []) {
-      if (!sum[r.deal_id]) sum[r.deal_id] = { requested: 0, received: 0 }
-      sum[r.deal_id].requested++
-      if (r.files_count >= 1) sum[r.deal_id].received++
+      if (!sum[r.deal_id]) sum[r.deal_id] = { requested: 0, received: 0, accepted: 0, awaiting: 0, rejected: 0 }
+      const s = sum[r.deal_id]
+      const rs = r.review_status || 'pending'
+      s.requested++
+      if (rs === 'rejected') s.rejected++
+      else if (r.files_count >= 1) {
+        s.received++
+        if (rs === 'accepted') s.accepted++
+        else s.awaiting++
+      }
     }
-    return list.map(d => ({ ...d, doc_summary: sum[d.id] || { requested: 0, received: 0 } }))
+    return list.map(d => ({ ...d, doc_summary: sum[d.id] || { requested: 0, received: 0, accepted: 0, awaiting: 0, rejected: 0 } }))
   } catch (e) {
     return list
   }

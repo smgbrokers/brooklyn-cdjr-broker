@@ -23,6 +23,7 @@ const DOC_TYPES = [
 
 function friendly(error) {
   const m = String((error && error.message) || '')
+  if (/review_status|reject_reason|reviewed_|viewed_/.test(m)) return 'Document review needs a one-time database update first.'
   return m.includes('deal_docs') || m.includes('deal_doc_files') ? 'Documents need a one-time database update first.' : m
 }
 
@@ -40,6 +41,10 @@ export default async function handler(req, res) {
     const { data: f } = await supabase.from('deal_doc_files').select('*').eq('id', req.query.id).single()
     if (!f) return err(res, 'File not found', 404)
     if (sess.role === 'admin') await logEvent({ dealId: f.deal_id, role: 'admin', userId: sess.user_id, action: 'doc_viewed', detail: f.file_name || 'a document', dedupeMinutes: 15 })
+    if (sess.role === 'admin') {
+      const { data: vw } = await supabase.from('admins').select('id,name').eq('id', sess.user_id).single()
+      await supabase.from('deal_doc_files').update({ viewed_at: new Date().toISOString(), viewed_by: sess.user_id, viewed_by_name: vw ? vw.name : null }).eq('id', f.id)
+    }
     if (sess.role !== 'admin') {
       const { data: d } = await supabase.from('deals').select('id,broker_id').eq('id', f.deal_id).single()
       if (!d || String(d.broker_id) !== String(sess.user_id)) return err(res, 'Forbidden', 403)
@@ -73,12 +78,12 @@ export default async function handler(req, res) {
     const byDoc = {}
     for (const f of files || []) {
       if (!byDoc[f.deal_doc_id]) byDoc[f.deal_doc_id] = []
-      byDoc[f.deal_doc_id].push({ id: f.id, file_name: f.file_name, content_type: f.content_type, size_bytes: f.size_bytes, uploaded_at: f.uploaded_at })
+      byDoc[f.deal_doc_id].push({ id: f.id, file_name: f.file_name, content_type: f.content_type, size_bytes: f.size_bytes, uploaded_at: f.uploaded_at, ...(isAdmin ? { viewed_at: f.viewed_at || null, viewed_by_name: f.viewed_by_name || null } : {}) })
     }
     return ok(res, {
       status: deal.status,
       types: DOC_TYPES.map(t => ({ key: t.key, label: t.label, max: t.max, def: t.def })),
-      items: (items || []).map(i => ({ id: i.id, doc_key: i.doc_key, label: i.label, max_files: i.max_files, requested_at: i.requested_at, requested_by_name: i.requested_by_name, files: byDoc[i.id] || [] })),
+      items: (items || []).map(i => ({ id: i.id, doc_key: i.doc_key, label: i.label, max_files: i.max_files, requested_at: i.requested_at, requested_by_name: i.requested_by_name, review_status: i.review_status || 'pending', reject_reason: i.reject_reason || null, reviewed_by_name: i.reviewed_by_name || null, reviewed_at: i.reviewed_at || null, files: byDoc[i.id] || [] })),
     })
   }
 
@@ -141,6 +146,17 @@ export default async function handler(req, res) {
     const buf = Buffer.from(String(f.data), 'base64')
     if (!buf.length) return err(res, 'That file looks empty.')
     if (buf.length > MAX_BYTES) return err(res, 'That file is too large (3 MB max). Try a photo instead of a scan.', 413)
+    // A rejected document starts fresh: the old files are cleared and the new upload goes back for review
+    const wasRejected = item.review_status === 'rejected'
+    if (wasRejected) {
+      const { data: oldFiles } = await supabase.from('deal_doc_files').select('*').eq('deal_doc_id', item.id)
+      if (oldFiles && oldFiles.length) {
+        await supabase.storage.from(BUCKET).remove(oldFiles.map(o => o.file_path))
+        await supabase.from('deal_doc_files').delete().eq('deal_doc_id', item.id)
+      }
+      await supabase.from('deal_docs').update({ files_count: 0 }).eq('id', item.id)
+      item.files_count = 0
+    }
     if (item.files_count >= item.max_files) return err(res, 'You have already uploaded the maximum number of files for this document.')
     const path = deal.deal_number + '/' + item.doc_key + '-' + Date.now() + '.' + ext
     await supabase.storage.createBucket(BUCKET, { public: false })
@@ -152,18 +168,62 @@ export default async function handler(req, res) {
       return err(res, friendly(fErr), 500)
     }
     await supabase.from('deal_docs').update({ files_count: item.files_count + 1 }).eq('id', item.id)
-    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, action: 'doc_uploaded', detail: item.label + ' (' + (f.name || 'file') + ')' })
+    if (wasRejected) await supabase.from('deal_docs').update({ review_status: 'pending', reject_reason: null }).eq('id', item.id)
+    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, action: 'doc_uploaded', detail: item.label + ' (' + (f.name || 'file') + ')' + (wasRejected ? ' - replaces the rejected file' : '') })
 
     // Tell the deal owner (or everyone on staff if nobody has claimed it)
-    const { data: all } = await supabase.from('deal_docs').select('id,files_count').eq('deal_id', deal.id)
+    const { data: all } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id)
     const others = (all || []).filter(r => r.id !== item.id)
-    const completed = item.files_count === 0 && others.every(r => r.files_count >= 1) && !(item.doc_key === 'worksheet' && others.length === 0)
+    const completed = item.files_count === 0 && others.every(r => r.files_count >= 1 && (r.review_status || 'pending') !== 'rejected') && !(item.doc_key === 'worksheet' && others.length === 0)
     const { data: broker } = await supabase.from('brokers').select('id,company_name').eq('id', deal.broker_id).single()
     const who = broker ? broker.company_name : 'The broker'
-    await notifyStaff(completed
-      ? { type: 'docs_complete', dealNumber: deal.deal_number, onlyAdminId: deal.assigned_to || null, title: 'All requested documents received', body: 'Deal #' + deal.deal_number + ' (' + deal.customer_name + '): all ' + (all || []).length + ' requested documents are in.' }
-      : { type: 'docs_uploaded', dealNumber: deal.deal_number, onlyAdminId: deal.assigned_to || null, title: 'Documents uploaded', body: who + ' uploaded ' + item.label + ' for Deal #' + deal.deal_number + ' (' + deal.customer_name + ')' })
+    const uploadedAlert = { type: 'docs_uploaded', dealNumber: deal.deal_number, onlyAdminId: deal.assigned_to || null, title: wasRejected ? 'Corrected document received' : 'Document received - awaiting approval', body: who + (wasRejected ? ' re-uploaded ' : ' uploaded ') + item.label + ' for Deal #' + deal.deal_number + ' (' + deal.customer_name + ')' }
+    if (completed) await notifyStaff({ type: 'docs_complete', dealNumber: deal.deal_number, onlyAdminId: deal.assigned_to || null, title: 'All requested documents received - awaiting approval', body: 'Deal #' + deal.deal_number + ' (' + deal.customer_name + '): all ' + (all || []).length + ' requested documents are in.' })
+    // A corrected file always gets its own alert, so whoever rejected it sees the replacement arrive
+    if (!completed || wasRejected) await notifyStaff(uploadedAlert)
     return ok(res, { ok: true }, 201)
+  }
+
+  // Staff: accept a document, once they have opened and looked at every file
+  if (req.method === 'POST' && action === 'accept') {
+    if (!isAdmin) return err(res, 'Only the Brooklyn CDJR team can review documents.', 403)
+    const deal = await loadDeal(body.deal_number)
+    if (!deal) return err(res, 'Deal not found', 404)
+    const { data: item } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id).eq('doc_key', body.doc_key).single()
+    if (!item) return err(res, 'That document was not found', 404)
+    const { data: files } = await supabase.from('deal_doc_files').select('*').eq('deal_doc_id', item.id)
+    if (!files || !files.length) return err(res, 'Nothing has been uploaded for this document yet.')
+    if (files.every(f => !('viewed_at' in f))) return err(res, 'Document review needs a one-time database update first.', 500)
+    if (files.some(f => !f.viewed_at)) return err(res, 'Open each file first, then you can accept it.')
+    const { data: me } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+    const { error } = await supabase.from('deal_docs').update({ review_status: 'accepted', reviewed_by: session.user_id, reviewed_by_name: me ? me.name : null, reviewed_at: new Date().toISOString(), reject_reason: null }).eq('id', item.id)
+    if (error) return err(res, friendly(error), 500)
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, name: me ? me.name : null, action: 'doc_accepted', detail: item.label })
+    await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: 'Accepted: your ' + item.label + ' was accepted.' })
+    return ok(res, { ok: true })
+  }
+
+  // Staff: reject a document with a reason. The broker is told in their chat (highlighted) and by email.
+  if (req.method === 'POST' && action === 'reject') {
+    if (!isAdmin) return err(res, 'Only the Brooklyn CDJR team can review documents.', 403)
+    const reason = String(body.reason || '').trim().slice(0, 500)
+    if (!reason) return err(res, 'Please give the broker a reason for rejecting this document.')
+    const deal = await loadDeal(body.deal_number)
+    if (!deal) return err(res, 'Deal not found', 404)
+    const { data: item } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id).eq('doc_key', body.doc_key).single()
+    if (!item) return err(res, 'That document was not found', 404)
+    if (!(item.files_count > 0)) return err(res, 'Nothing has been uploaded for this document yet.')
+    const { data: me } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+    const { error } = await supabase.from('deal_docs').update({ review_status: 'rejected', reject_reason: reason, reviewed_by: session.user_id, reviewed_by_name: me ? me.name : null, reviewed_at: new Date().toISOString() }).eq('id', item.id)
+    if (error) return err(res, friendly(error), 500)
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, name: me ? me.name : null, action: 'doc_rejected', detail: item.label + ': ' + reason })
+    await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: 'REJECTED DOCUMENT - Your ' + item.label + ' was rejected. Reason: ' + reason })
+    const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
+    if (broker && broker.email) {
+      const text = 'Hi ' + (broker.contact_name || broker.company_name) + ',\n\nYour ' + item.label + ' for Deal #' + deal.deal_number + ' (' + deal.customer_name + ') was rejected.\n\nReason: ' + reason + '\n\nPlease upload a corrected file in the broker portal: open My Deals, find the deal, and use the Docs tab.\n' + SITE + '\n\n- Brooklyn CDJR Team'
+      await sendEmail(broker.email, 'Brooklyn CDJR - Document rejected (Deal #' + deal.deal_number + ')', text)
+    }
+    return ok(res, { ok: true })
   }
 
   // Remove an uploaded file (staff any time; broker only while the deal is still waiting on docs)
@@ -174,14 +234,17 @@ export default async function handler(req, res) {
     if (!deal) return err(res, 'Deal not found', 404)
     if (!isAdmin) {
       if (String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
-      if (!['Application', 'Approved'].includes(deal.status)) return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
+      const { data: chk } = await supabase.from('deal_docs').select('*').eq('id', f.deal_doc_id).single()
+      if (chk && chk.review_status === 'accepted') return err(res, 'This document was already accepted. Please contact the Brooklyn CDJR team if it needs to change.', 403)
+      if (!['Application', 'Approved'].includes(deal.status) && !(chk && chk.review_status === 'rejected')) return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
     }
     await logEvent({ dealId: deal.id, role: isAdmin ? 'admin' : 'broker', userId: session.user_id, action: 'doc_removed', detail: f.file_name || 'a file' })
     await supabase.storage.from(BUCKET).remove([f.file_path])
     const { error } = await supabase.from('deal_doc_files').delete().eq('id', f.id)
     if (error) return err(res, friendly(error), 500)
-    const { data: item } = await supabase.from('deal_docs').select('id,files_count').eq('id', f.deal_doc_id).single()
+    const { data: item } = await supabase.from('deal_docs').select('*').eq('id', f.deal_doc_id).single()
     if (item) await supabase.from('deal_docs').update({ files_count: Math.max(0, item.files_count - 1) }).eq('id', item.id)
+    if (item && item.review_status === 'accepted') await supabase.from('deal_docs').update({ review_status: 'pending' }).eq('id', item.id)
     return ok(res, { ok: true })
   }
 
