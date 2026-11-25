@@ -1,7 +1,7 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny, sendEmail } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
-import { zipSync, strToU8 } from 'fflate'
+import { makeZip, strToU8 } from './_zip.js'
 import { brokerCanSee, brokerRecipients } from './_team.js'
 import { logEvent } from './_audit.js'
 
@@ -106,7 +106,7 @@ export default async function handler(req, res) {
     if (!Object.keys(entries).length) return err(res, 'Could not read the files. Please try again.', 500)
     const fileCount = Object.keys(entries).length
     if (missing.length) entries['READ ME - some files could not be included.txt'] = strToU8('These files could not be added to the ZIP:\n\n' + missing.join('\n') + '\n')
-    const zipped = zipSync(entries, { level: 0 })
+    const zipped = makeZip(entries)
     const zipPath = 'zips/' + zd.deal_number + '.zip'
     await supabase.storage.createBucket(BUCKET, { public: false })
     const { error: zUpErr } = await supabase.storage.from(BUCKET).upload(zipPath, Buffer.from(zipped), { contentType: 'application/zip', upsert: true })
