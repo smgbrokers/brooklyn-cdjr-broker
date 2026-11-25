@@ -65,7 +65,13 @@ export default async function handler(req, res) {
       if (error) return err(res, error.message, 500)
       const brokerMap = await getBrokerMap()
       const adminMap = await getAdminMap()
-      const flat = data.map(d => {
+      // Whose deals to show. The server works out who me is from the login, so it can never be out of date.
+      const ownerFilter = String(req.query.assigned || 'all')
+      const rowsOut = ownerFilter === 'me' ? data.filter(d => String(d.assigned_to) === String(session.user_id))
+        : ownerFilter === 'unassigned' ? data.filter(d => !d.assigned_to && !['Request', 'Dead'].includes(d.status))
+        : /^\d+$/.test(ownerFilter) ? data.filter(d => String(d.assigned_to) === ownerFilter)
+        : data
+      const flat = rowsOut.map(d => {
         const b = brokerMap[d.broker_id] || {}
         return { ...d, assigned_to_name: (adminMap[d.assigned_to] || {}).name || null, broker_name: b.company_name, broker_code: b.broker_code, broker_contact: b.contact_name, broker_email: b.email }
       })

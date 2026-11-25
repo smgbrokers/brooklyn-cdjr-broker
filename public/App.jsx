@@ -630,7 +630,7 @@ function BrokerPortal({broker,onLogout}){
 
 function AdminPortal({user,onLogout}){
   const[tab,setTab]=useState("dashboard"),[deals,setDeals]=useState([]),[inv,setInv]=useState([]),[brokers,setBrokers]=useState([]),[admins,setAdmins]=useState([]),[toast,setToast]=useState(null),[loading,setL]=useState(false);
-  const[viewMode,setViewMode]=useState(localStorage.getItem("admin_view")==="mine"?"mine":"all");
+  const[viewMode,setViewMode]=useState((()=>{const v=localStorage.getItem('admin_view');return v==='mine'?'me':(v||'all');})());
   const[reassign,setReassign]=useState(null),[rsNotify,setRsNotify]=useState(true),[rsMsg,setRsMsg]=useState(''),[rsBusy,setRsBusy]=useState(false);
   const[selTab,setSelTab]=useState(null);
   const[sf,setSF]=useState("All"),[bf,setBF]=useState("All"),[bs,setBS]=useState(""),[gs,setGS]=useState(""),[selDeal,setSelDeal]=useState(null),[selBroker,setSelBroker]=useState(null),[resetBroker,setResetBroker]=useState(null);
@@ -640,7 +640,7 @@ function AdminPortal({user,onLogout}){
   const[pf,setPF]=useState({name:user.name||"",email:user.email||"",current_password:"",new_password:"",confirm_password:""});
   const[rpw,setRPW]=useState({broker_code:"",new_password:""});
   function t2(msg,type="success"){setToast({msg,type});setTimeout(()=>setToast(null),3500);}
-  const loadDeals=useCallback(async()=>{try{const p=new URLSearchParams();if(sf!=="All")p.set("status",sf);if(bf!=="All")p.set("broker_id",bf);if(gs)p.set("search",gs);{const list=await apiFetch(`deals?${p}`);setDeals(viewMode==="mine"?list.filter(d=>user.id&&String(d.assigned_to)===String(user.id)):list);}}catch(e){t2(e.message,"error");}},[sf,bf,gs,viewMode,user.id]);
+  const loadDeals=useCallback(async()=>{try{const p=new URLSearchParams();if(sf!=="All")p.set("status",sf);if(bf!=="All")p.set("broker_id",bf);if(gs)p.set("search",gs);{if(viewMode!=='all')p.set('assigned',viewMode);setDeals(await apiFetch(`deals?${p}`));}}catch(e){t2(e.message,"error");}},[sf,bf,gs,viewMode,user.id]);
   const loadInv=useCallback(async()=>{try{setInv(await apiFetch("inventory"));}catch(e){t2(e.message,"error");}},[]);
   const loadBrokers=useCallback(async()=>{try{setBrokers(await apiFetch("brokers"));}catch(e){t2(e.message,"error");}},[]);
   const loadAdmins=useCallback(async()=>{try{setAdmins(await apiFetch("admins"));}catch(e){t2(e.message,"error");}},[]);
@@ -649,10 +649,11 @@ function AdminPortal({user,onLogout}){
   useEffect(()=>{if(tab==="brokers"||tab==="dashboard")loadBrokers();},[tab,loadBrokers]);
   useEffect(()=>{if(tab==="settings")loadAdmins();},[tab,loadAdmins]);
   useEffect(()=>{if(selDeal)loadAdmins();},[selDeal&&selDeal.deal_number]);
+  useEffect(()=>{loadAdmins();},[loadAdmins]);
   const stats=useMemo(()=>{const total=deals.length,apps=deals.filter(d=>["Application","Approved","Docs Sent","Ready to Pick Up","Completed"].includes(d.status)).length,approved=deals.filter(d=>["Approved","Docs Sent","Ready to Pick Up","Completed"].includes(d.status)).length,sold=deals.filter(d=>d.status==="Completed").length;return{total,apps,approved,sold,appRate:total?Math.round(apps/total*100):0,closeRate:total?Math.round(sold/total*100):0};},[deals]);
   const filteredBrokers=useMemo(()=>bs?brokers.filter(b=>b.company_name.toLowerCase().includes(bs.toLowerCase())||b.broker_code.toLowerCase().includes(bs.toLowerCase())):brokers,[brokers,bs]);
   async function updateStatus(dn,s){try{await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,status:s}});t2(`Moved to ${s}`);setDeals(p=>p.map(d=>d.deal_number===dn?{...d,status:s}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,status:s}));}catch(e){t2(e.message,"error");}}
-  const viewToggle=<div style={{display:"inline-flex",background:"#E5E7EB",borderRadius:10,padding:3}}>{[["all","All deals"],["mine","Just me"]].map(([k,l])=><button key={k} onClick={()=>{setViewMode(k);localStorage.setItem("admin_view",k);}} style={{padding:"7px 16px",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13,background:viewMode===k?"#1D4ED8":"transparent",color:viewMode===k?"#fff":"#374151"}}>{l}</button>)}</div>;
+  const viewToggle=<select value={viewMode} onChange={e=>{setViewMode(e.target.value);localStorage.setItem('admin_view',e.target.value);}} title='Choose whose deals to show' style={{padding:'8px 12px',borderRadius:10,border:'1.5px solid #D1D5DB',background:'#fff',fontWeight:700,fontSize:13,color:'#1F2937',cursor:'pointer',minWidth:210}}><option value='all'>All deals</option><option value='me'>My deals</option><option value='unassigned'>Unassigned (needs an owner)</option>{admins.filter(a=>String(a.id)!==String(user.id)&&a.email!==user.email).map(a=><option key={a.id} value={String(a.id)}>{a.name}{a.role==='fleet_manager'?' (Fleet Manager)':''}</option>)}</select>;
   async function doAssign(dn,assigneeId,extra){try{const r=await apiFetch('deals?action=assign',{method:'PUT',body:{deal_number:dn,assignee_id:assigneeId,...(extra||{})}});t2(r.message||'Assigned');setSelDeal(d=>d?{...d,assigned_to:r.assigned_to,assigned_to_name:r.assigned_to_name}:d);loadDeals();return true;}catch(e){if(String(e.message).startsWith('REASSIGN_CONFIRM:')){askReassign(dn,assigneeId,String(e.message).slice(17).trim());}else{t2(e.message,'error');}return false;}}
   function askReassign(dn,assigneeId,currentName){const t=assigneeId==='me'?{name:user.name}:(admins.find(a=>String(a.id)===String(assigneeId))||{});setRsNotify(true);setRsMsg('');setReassign({dn,assigneeId,targetName:t.name||'this user',currentName:currentName||(selDeal&&selDeal.assigned_to_name)||'the current owner',broker:(selDeal&&selDeal.broker_name)||'the broker'});}
   async function assignDeal(dn,assigneeId){const cur=selDeal&&selDeal.deal_number===dn?selDeal:null;const tid=assigneeId==='me'?user.id:assigneeId;if(cur&&cur.assigned_to&&(!tid||String(cur.assigned_to)!==String(tid))){askReassign(dn,assigneeId,cur.assigned_to_name);return;}await doAssign(dn,assigneeId);}
