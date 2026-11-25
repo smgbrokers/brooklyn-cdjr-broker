@@ -39,6 +39,8 @@ export default async function handler(req, res) {
     return ok(res, { ok: true })
   }
 
+  // a file link opened in a new tab carries the token in the address (as the Docs screen does)
+  if (req.method === 'GET' && action === 'file' && req.query._t && !(req.headers && req.headers.authorization)) req.headers = { ...(req.headers || {}), authorization: 'Bearer ' + req.query._t }
   const who = await requirePorterOrStaff(req, res)
   if (!who) return
   const isStaff = who.kind === 'staff'
@@ -113,6 +115,75 @@ export default async function handler(req, res) {
       await notifyStaff({ type: 'porter_note', dealNumber: c.deal_number, onlyAdminId: owner || null, title: 'Porter note: ' + (c.model || c.vin || 'a car'), body: who.name + ': ' + text.slice(0, 140) })
     }
     return ok(res, { ok: true, entry: logView(entry) }, 201)
+  }
+
+  // ---- inspection files: PDF, photos and documents on a car (porters and the office) ----
+  const FILE_BUCKET = 'deal-docs'
+  const FILE_MAX = 3200000
+  const FILE_TYPES = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', tif: 'image/tiff', tiff: 'image/tiff', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', csv: 'text/csv' }
+  const safeFileName = n => String(n).split('').map(ch => ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_'.includes(ch) ? ch : '_')).join('').slice(-80)
+  const fileView = f => ({ id: f.id, name: f.file_name, mime: f.mime, size: f.size_bytes, uploaded_by_role: f.uploaded_by_role, uploaded_by_name: f.uploaded_by_name, created_at: f.created_at, can_delete: isStaff || (f.uploaded_by_role === 'porter' && f.uploaded_by_id === who.id) })
+  if (req.method === 'GET' && action === 'files') {
+    const c = await loadCard(req.query.card_id)
+    if (!c) return err(res, 'Card not found', 404)
+    const { data, error } = await supabase.from('porter_files').select('*').eq('card_id', c.id).order('id', { ascending: false })
+    if (error) return err(res, porterFriendly(error), 500)
+    return ok(res, { files: (data || []).map(fileView) })
+  }
+  if (req.method === 'GET' && action === 'file') {
+    const { data: f } = await supabase.from('porter_files').select('*').eq('id', req.query.id).single()
+    if (!f) return err(res, 'File not found', 404)
+    const { data: signed, error: signErr } = await supabase.storage.from(FILE_BUCKET).createSignedUrl(f.file_path, 120)
+    if (signErr || !signed || !signed.signedUrl) return err(res, 'Could not open the file', 500)
+    res.setHeader('Location', signed.signedUrl)
+    res.status(302).end()
+    return
+  }
+  if (req.method === 'POST' && action === 'file_add') {
+    const c = await loadCard(body.card_id)
+    if (!c) return err(res, 'Card not found', 404)
+    const name = String(body.name || '').trim().slice(0, 150)
+    const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+    const mime = FILE_TYPES[ext]
+    if (!name || !mime) return err(res, 'That file type is not allowed. Use PDF, JPG, PNG, Word, Excel or a text file.')
+    const buf = Buffer.from(String(body.data || ''), 'base64')
+    if (!buf.length) return err(res, 'That file is empty.')
+    if (buf.length > FILE_MAX) return err(res, 'That file is too large (3 MB max). Try a photo instead of a scan.', 413)
+    const { data: have, error: haveErr } = await supabase.from('porter_files').select('id').eq('card_id', c.id)
+    if (haveErr) return err(res, porterFriendly(haveErr), 500)
+    if ((have || []).length >= 20) return err(res, 'A car can have up to 20 files. Remove one first.')
+    const path = 'inspections/' + c.id + '/' + Date.now() + '-' + safeFileName(name)
+    await supabase.storage.createBucket(FILE_BUCKET, { public: false })
+    const { error: upErr } = await supabase.storage.from(FILE_BUCKET).upload(path, buf, { contentType: mime, upsert: false })
+    if (upErr) return err(res, 'Could not save the file. Please try again.', 500)
+    const { data: row, error: insErr } = await supabase.from('porter_files').insert({ card_id: c.id, file_name: name, file_path: path, mime, size_bytes: buf.length, uploaded_by_role: who.kind, uploaded_by_id: who.id, uploaded_by_name: who.name }).select('*').single()
+    if (insErr) {
+      await supabase.storage.from(FILE_BUCKET).remove([path])
+      return err(res, porterFriendly(insErr), 500)
+    }
+    await supabase.from('porter_log').insert({ card_id: c.id, actor_role: who.kind, actor_name: who.name, action: 'file_added', detail: 'Inspection file added: ' + name })
+    if (c.deal_id) await logEvent({ dealId: c.deal_id, role: isStaff ? 'admin' : 'porter', userId: who.id, name: who.name + (isStaff ? '' : ' (porter)'), action: 'car_file', detail: name })
+    if (!isStaff) {
+      let owner = null
+      if (c.deal_id) {
+        const { data: d } = await supabase.from('deals').select('assigned_to').eq('id', c.deal_id).single()
+        owner = d ? d.assigned_to : null
+      }
+      await notifyStaff({ type: 'porter_note', dealNumber: c.deal_number, onlyAdminId: owner || null, title: 'Inspection file: ' + (c.model || c.vin || 'a car'), body: who.name + ' uploaded ' + name })
+    }
+    return ok(res, { ok: true, file: fileView(row) }, 201)
+  }
+  if (req.method === 'POST' && action === 'file_remove') {
+    const { data: f } = await supabase.from('porter_files').select('*').eq('id', body.id).single()
+    if (!f) return err(res, 'File not found', 404)
+    if (!(isStaff || (f.uploaded_by_role === 'porter' && f.uploaded_by_id === who.id))) return err(res, 'You can only remove your own files.', 403)
+    await supabase.storage.from(FILE_BUCKET).remove([f.file_path])
+    const { error } = await supabase.from('porter_files').delete().eq('id', f.id)
+    if (error) return err(res, porterFriendly(error), 500)
+    await supabase.from('porter_log').insert({ card_id: f.card_id, actor_role: who.kind, actor_name: who.name, action: 'file_removed', detail: 'Inspection file removed: ' + f.file_name })
+    const c = await loadCard(f.card_id)
+    if (c && c.deal_id) await logEvent({ dealId: c.deal_id, role: isStaff ? 'admin' : 'porter', userId: who.id, name: who.name + (isStaff ? '' : ' (porter)'), action: 'car_file_removed', detail: f.file_name })
+    return ok(res, { ok: true })
   }
 
   // ---- office only from here ----

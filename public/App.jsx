@@ -590,7 +590,7 @@ function useLive(keys,fn){const ref=useRef(fn);ref.current=fn;useEffect(()=>{con
 const carLast=n=>{const p=String(n||'').trim().split(' ').filter(Boolean);if(!p.length)return '';const l=p[p.length-1];const b=l.split('.').join('').toLowerCase();return p.length>1&&['jr','sr','ii','iii','iv'].includes(b)?p[p.length-2]:l;};
 const carTitle=({vin,model,last,broker,inspection})=>[vin,model,last,broker,inspection?'INSPECTION NEEDED':'NO INSPECTION'].filter(Boolean).join(' - ');
 const carAgo=t=>{if(!t)return '';const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+'m':m<1440?Math.round(m/60)+'h':Math.round(m/1440)+'d';};
-const carIcon={created:'\ud83c\udd95',moved:'\u27a1\ufe0f',removed:'\ud83d\uddd1\ufe0f'};
+const carIcon={file_added:'📎',file_removed:'🗑️',created:'\ud83c\udd95',moved:'\u27a1\ufe0f',removed:'\ud83d\uddd1\ufe0f'};
 function CarCardView({card,color,onOpen,drag}){
   return <div draggable={!!drag} onDragStart={drag?e=>{e.dataTransfer.setData('text/plain',String(card.id));e.dataTransfer.effectAllowed='move';drag(card.id);}:undefined} onClick={()=>onOpen(card)} style={{background:'#fff',borderRadius:8,padding:'10px 12px',marginBottom:8,boxShadow:'0 1px 3px rgba(9,30,66,0.25)',cursor:'pointer',borderLeft:'4px solid '+color}}>
     <div style={{fontSize:13,fontWeight:600,color:'#172B4D',lineHeight:1.4,wordBreak:'break-word'}}>{card.title}</div>
@@ -615,13 +615,37 @@ function CarBoardView({columns,cards,onOpen,onDropCard,canDrag,loading,error}){
     </div>
   </div>;
 }
-function CarActivity({log,note,setNote,onSend,busy,err,initialTab}){
-  const[tab,setTab]=useState(initialTab||'notes');
+const inspExts=['pdf','jpg','jpeg','png','gif','webp','heic','heif','tif','tiff','doc','docx','xls','xlsx','txt','csv'];
+const inspImgs=['jpg','jpeg','png','webp','heic','heif','tif','tiff'];
+const inspExt=name=>{const p=String(name||'').split('.');return p.length>1?p.pop().toLowerCase():'';};
+const inspSize=n=>{const v=Number(n)||0;return v>=1048576?(v/1048576).toFixed(1)+' MB':Math.max(1,Math.round(v/1024))+' KB';};
+const inspGlyph=name=>{const e=inspExt(name);return e==='pdf'?'📄':(inspImgs.includes(e)||e==='gif')?'🖼️':'📎';};
+async function prepareInspection(f){
+  const ext=inspExt(f.name);
+  if(!inspExts.includes(ext))throw new Error('"'+f.name+'" is not an allowed file type. Use PDF, JPG, PNG, Word, Excel or a text file.');
+  let blob=f,name=f.name;
+  if(inspImgs.includes(ext)&&f.size>1200000){
+    try{const bmp=await createImageBitmap(f);const scale=Math.min(1,2200/Math.max(bmp.width,bmp.height));const cv=document.createElement('canvas');cv.width=Math.round(bmp.width*scale);cv.height=Math.round(bmp.height*scale);cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);const out=await new Promise(r=>cv.toBlob(r,'image/jpeg',0.85));if(out&&out.size<f.size){blob=out;name=name.slice(0,name.length-ext.length)+'jpg';}}catch(e){}
+  }
+  if(blob.size>3000000)throw new Error('"'+f.name+'" is too large (3 MB max). '+(inspImgs.includes(ext)?'Try a smaller photo.':'Try a smaller file, or a photo instead of a scan.'));
+  const data=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(blob);});
+  return{name,data};
+}
+
+function CarActivity({log,note,setNote,onSend,busy,err,initialTab,cardId,initialFiles}){
+  const[tab,setTab]=useState(initialTab||'notes'),[files,setFiles]=useState(initialFiles||null),[ferr,setFerr]=useState(''),[upMsg,setUpMsg]=useState(''),[uploading,setUploading]=useState(false),[rmId,setRmId]=useState(null);
+  const fileRef=useRef(null),token=localStorage.getItem('auth_token')||'';
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const loadFiles=useCallback(async()=>{if(!cardId)return;try{const r=await apiFetch('porter?action=files&card_id='+cardId);setFiles(r.files||[]);}catch(e){setFerr(e.message);}},[cardId]);
+  useEffect(()=>{if(!initialFiles)loadFiles();},[loadFiles]);
+  useLive(['cars'],()=>{loadFiles();});
+  async function pick(e){const list=Array.from((e.target&&e.target.files)||[]);if(e.target)e.target.value='';if(!list.length)return;setUploading(true);setFerr('');setUpMsg('');let done=0;for(let i=0;i<list.length;i++){try{setUpMsg('Uploading '+(i+1)+' of '+list.length+'...');const p=await prepareInspection(list[i]);await apiFetch('porter?action=file_add',{method:'POST',body:{card_id:cardId,name:p.name,data:p.data}});done++;}catch(ex){setFerr(ex.message);break;}}setUploading(false);setUpMsg(done?'Uploaded '+done+(done===1?' file.':' files.'):'');await loadFiles();}
+  async function removeFile(f){try{await apiFetch('porter?action=file_remove',{method:'POST',body:{id:f.id}});setRmId(null);await loadFiles();}catch(ex){setFerr(ex.message);setRmId(null);}}
+  const openFile=f=>window.open(API+'/porter?action=file&id='+f.id+'&_t='+encodeURIComponent(token),'_blank');
   const notes=log.filter(l=>l.action==='note'),acts=log.filter(l=>l.action!=='note');
   const tabBtn=(k,l,n)=><button key={k} type='button' onClick={()=>setTab(k)} style={{flex:1,padding:'9px 12px',border:'none',borderBottom:'3px solid '+(tab===k?'#1D4ED8':'transparent'),background:'none',cursor:'pointer',fontWeight:700,fontSize:13,color:tab===k?'#1D4ED8':'#6B7280'}}>{l}<span style={{marginLeft:6,background:tab===k?'#DBEAFE':'#F3F4F6',color:tab===k?'#1D4ED8':'#6B7280',borderRadius:10,padding:'1px 8px',fontSize:11}}>{n}</span></button>;
   return <div>
-    <div style={{display:'flex',borderBottom:'1px solid #E5E7EB',marginBottom:12}}>{tabBtn('notes','Notes',notes.length)}{tabBtn('activity','Activity',acts.length)}</div>
+    <div style={{display:'flex',borderBottom:'1px solid #E5E7EB',marginBottom:12}}>{tabBtn('notes','Notes',notes.length)}{tabBtn('activity','Activity',acts.length)}{cardId&&tabBtn('files','Inspection',files?files.length:0)}</div>
     {tab==='notes'&&<>
       <div style={{maxHeight:240,overflowY:'auto',marginBottom:10}}>
         {notes.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No notes yet.</div>}
@@ -635,6 +659,19 @@ function CarActivity({log,note,setNote,onSend,busy,err,initialTab}){
       {acts.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No activity yet.</div>}
       {acts.map(l=><div key={l.id} style={{display:'flex',gap:10,alignItems:'flex-start',padding:'8px 0',borderBottom:'1px solid #F3F4F6'}}><div style={{width:22,textAlign:'center',fontSize:15}}>{carIcon[l.action]||'•'}</div><div style={{minWidth:0}}><div style={{fontSize:13,color:'#374151',wordBreak:'break-word'}}>{l.detail}</div><div style={{fontSize:11,color:'#9CA3AF',marginTop:2}}>{l.actor_name}{' · '}{fmt(l.created_at)}</div></div></div>)}
     </div>}
+    {tab==='files'&&<div>
+      <div style={{fontSize:12,color:'#6B7280',marginBottom:10,lineHeight:1.5}}>Upload the inspection report or photos here: PDF, JPG, PNG, Word, Excel or text, up to 3 MB each. Large photos are shrunk automatically.</div>
+      <input ref={fileRef} type='file' multiple accept={'.'+inspExts.join(',.')} onChange={pick} style={{display:'none'}}/>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}><Btn onClick={()=>fileRef.current&&fileRef.current.click()} loading={uploading}>+ Upload inspection file</Btn>{upMsg&&<span style={{fontSize:12,color:'#065F46',fontWeight:600}}>{upMsg}</span>}</div>
+      {ferr&&<div style={{color:'#DC2626',fontSize:13,marginTop:8}}>{ferr}</div>}
+      <div style={{marginTop:12,maxHeight:260,overflowY:'auto'}}>
+        {files===null?<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>Loading files...</div>:files.length===0?<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No inspection file uploaded yet.</div>:files.map(f=><div key={f.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1.5px solid #E5E7EB',borderRadius:10,marginBottom:8,background:'#fff'}}>
+          <div style={{fontSize:22}}>{inspGlyph(f.name)}</div>
+          <div style={{flex:1,minWidth:0}}><button type='button' onClick={()=>openFile(f)} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#1D4ED8',fontWeight:700,fontSize:14,textAlign:'left',wordBreak:'break-word'}}>{f.name}</button><div style={{fontSize:11,color:'#9CA3AF',marginTop:2}}>{inspSize(f.size)}{' · '}{f.uploaded_by_name}{f.uploaded_by_role==='porter'?' (porter)':' (office)'}{' · '}{fmt(f.created_at)}</div></div>
+          {f.can_delete&&(rmId===f.id?<div style={{display:'flex',gap:6}}><Btn size='sm' variant='danger' onClick={()=>removeFile(f)}>Confirm remove</Btn><Btn size='sm' variant='outline' onClick={()=>setRmId(null)}>Keep</Btn></div>:<Btn size='sm' variant='outline' onClick={()=>setRmId(f.id)} style={{color:'#DC2626',borderColor:'#FCA5A5'}}>Remove</Btn>)}
+        </div>)}
+      </div>
+    </div>}
   </div>;
 }
 
@@ -647,7 +684,7 @@ function CarModalView({card,log,columns,staff,onClose,onMove,note,setNote,onSend
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>{[['VIN',card.vin],['Model',card.model],['Customer',card.customer_last],['Broker',card.broker_name]].map(([l,v])=><div key={l} style={{background:'#F8FAFC',borderRadius:8,padding:'8px 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase'}}>{l}</div><div style={{fontSize:13,fontWeight:600,wordBreak:'break-word'}}>{v||'-'}</div></div>)}</div>
     <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:6}}>Move to</div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>{columns.map(c=><button key={c.key} onClick={()=>onMove(c.key)} disabled={c.key===card.column_key} style={{padding:'7px 12px',borderRadius:8,border:'2px solid '+c.color,background:c.key===card.column_key?c.color:'#fff',color:c.key===card.column_key?'#fff':c.color,fontWeight:700,fontSize:12,cursor:c.key===card.column_key?'default':'pointer'}}>{c.label}</button>)}</div>
-    <CarActivity log={log} note={note} setNote={setNote} onSend={onSend} busy={busy} err={err}/>
+    <CarActivity log={log} note={note} setNote={setNote} onSend={onSend} busy={busy} err={err} cardId={card.id}/>
     {staff&&<div style={{display:'flex',gap:10,flexWrap:'wrap',marginTop:14,borderTop:'1px solid #E5E7EB',paddingTop:12}}>{card.deal_number&&onOpenDeal&&<Btn size='sm' variant='outline' onClick={()=>onOpenDeal(card.deal_number)}>Open deal #{card.deal_number}</Btn>}{onRemove&&<Btn size='sm' variant='danger' onClick={onRemove}>Remove from board</Btn>}</div>}
   </Modal>;
 }
@@ -851,7 +888,7 @@ function CarStatusTab({deal}){
       <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:6}}>Move to</div>
       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cols.map(x=><button key={x.key} onClick={()=>move(x.key)} disabled={x.key===c.column_key} style={{padding:'7px 12px',borderRadius:8,border:'2px solid '+x.color,background:x.key===c.column_key?x.color:'#fff',color:x.key===c.column_key?'#fff':x.color,fontWeight:700,fontSize:12,cursor:x.key===c.column_key?'default':'pointer'}}>{x.label}</button>)}</div>
     </div>
-    <div style={box}><CarActivity log={d.log||[]} note={note} setNote={setNote} onSend={send} busy={nbusy} err={nerr}/></div>
+    <div style={box}><CarActivity log={d.log||[]} note={note} setNote={setNote} onSend={send} busy={nbusy} err={nerr} cardId={d.card&&d.card.id}/></div>
     {cerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{cerr}</div>}
     <button onClick={remove} style={{background:'none',border:'none',color:'#6B7280',fontSize:12,textDecoration:'underline',cursor:'pointer',padding:0}}>Remove this car from the board</button>
   </div>;
@@ -915,7 +952,7 @@ function LogTab({dealNumber}){
   const load=useCallback(()=>{apiFetch('deals?action=events&deal_number='+encodeURIComponent(dealNumber)).then(r=>{setRows(r);setLerr('');}).catch(e=>setLerr(e.message));},[dealNumber]);
   useEffect(()=>{load();},[load]);
   useLive(['events'],()=>{load();});
-  const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note'],doc_accepted:['✅','accepted a document'],doc_rejected:['⛔','rejected a document'],docs_zip:['📦','downloaded all documents as a ZIP'],payout_recorded:['💵','recorded the payout'],payout_edited:['✏️','edited the payout'],check_paid:['✅','marked the check paid'],check_unpaid:['↩️','marked the check unpaid'],car_added:['🧰','added the car to Get Ready'],car_moved:['🚗','moved the car'],car_note:['💬','left a car note'],car_removed:['🗑️','removed the car from the board']};
+  const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note'],doc_accepted:['✅','accepted a document'],doc_rejected:['⛔','rejected a document'],docs_zip:['📦','downloaded all documents as a ZIP'],payout_recorded:['💵','recorded the payout'],payout_edited:['✏️','edited the payout'],check_paid:['✅','marked the check paid'],check_unpaid:['↩️','marked the check unpaid'],car_added:['🧰','added the car to Get Ready'],car_moved:['🚗','moved the car'],car_note:['💬','left a car note'],car_file:['📎','added an inspection file'],car_file_removed:['🗑️','removed an inspection file'],car_removed:['🗑️','removed the car from the board']};
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
   const roleChip={admin:['Staff','#DBEAFE','#1E40AF'],broker:['Broker','#D1FAE5','#065F46'],system:['System','#F3F4F6','#374151']};
   return <div>

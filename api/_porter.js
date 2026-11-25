@@ -36,7 +36,7 @@ export const PORTER_SETUP_MSG = 'The Get Ready board needs a one-time database u
 // added in brackets (and logged), so a missing table, a missing column and a stale table list can be told apart.
 export function porterFriendly(error) {
   const m = String((error && error.message) || '')
-  if (!/porter_cards|porter_log|porter_sessions|porter_columns|porters/.test(m)) return m
+  if (!/porter_cards|porter_log|porter_sessions|porter_columns|porter_files|porters/.test(m)) return m
   // The first part of the database address is the Supabase project ID (not a secret): it shows which project the portal is using
   const project = String(process.env.SUPABASE_URL || '').split('//').pop().split('.')[0]
   console.error('[porter] database problem:', m, '| portal is connected to Supabase project:', project || 'unknown')
