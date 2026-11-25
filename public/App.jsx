@@ -386,7 +386,7 @@ function NotificationsBell({onOpenDeal}){
   const has=data.count>0;
   const ago=t=>{const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' hr ago':Math.round(m/1440)+' d ago';};
   const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',reassigned:'🔁',docs_uploaded:'📎',docs_complete:'✅',note:'📝'};
-  function openItem(it){setOpen(false);if(it.kind==='event'&&it.unread){apiFetch('notifications?action=read',{method:'POST',body:{id:it.id}}).then(refresh).catch(()=>{});}if(it.deal)onOpenDeal(it.deal);}
+  function openItem(it){setOpen(false);if(it.kind==='event'&&it.unread){apiFetch('notifications?action=read',{method:'POST',body:{id:it.id}}).then(refresh).catch(()=>{});}if(it.deal)onOpenDeal(it.deal,it.type);}
   function markAll(){apiFetch('notifications?action=read',{method:'POST',body:{all:true}}).then(refresh).catch(()=>{});}
   return <div style={{position:'relative'}}>
     <style>{'@keyframes bellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(14deg)}30%{transform:rotate(-12deg)}45%{transform:rotate(9deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}@keyframes badgePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.7)}50%{box-shadow:0 0 0 7px rgba(239,68,68,0)}}'}</style>
@@ -407,31 +407,94 @@ function NotificationsBell({onOpenDeal}){
     </div></>}
   </div>;
 }
-function DealModal({deal,onClose,onStatusChange,onToggleAvailable,staff,me,onAssign}){
-  const[showApp,setShowApp]=useState(false);
-  if(!deal)return null;
-  if(showApp)return <CreditAppViewer dealNumber={deal.deal_number} onClose={()=>setShowApp(false)}/>;
-  const availDt=deal.vehicle_available_at?new Date(deal.vehicle_available_at).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}):null;
-  return <Modal title={`Deal #${deal.deal_number}`} onClose={onClose} wide>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
-      <div style={{background:"#F8FAFC",borderRadius:12,padding:20}}><div style={{fontSize:11,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",marginBottom:10}}>Customer</div><div style={{fontSize:18,fontWeight:800,marginBottom:4}}>{deal.customer_name}</div>{deal.customer_phone&&<div style={{fontSize:14}}>📞 {deal.customer_phone}</div>}{deal.customer_email&&<div style={{fontSize:14}}>✉️ {deal.customer_email}</div>}</div>
-      <div style={{background:"#F8FAFC",borderRadius:12,padding:20}}><div style={{fontSize:11,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",marginBottom:10}}>Broker</div><div style={{fontSize:16,fontWeight:700}}>{deal.broker_name}</div><div style={{fontSize:13,color:"#6B7280"}}>{deal.broker_code}</div>{deal.broker_contact&&<div style={{fontSize:13,marginTop:4}}>{deal.broker_contact}</div>}{deal.broker_email&&<div style={{fontSize:13}}>✉️ {deal.broker_email}</div>}</div>
-    </div>
-    {onAssign&&!["Request","Dead"].includes(deal.status)&&<div style={{background:"#EFF6FF",border:"1.5px solid #BFDBFE",borderRadius:12,padding:20,marginBottom:20}}><div style={{fontSize:11,fontWeight:700,color:"#1D4ED8",textTransform:"uppercase",marginBottom:10}}>Assigned to</div><div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}><div style={{fontSize:16,fontWeight:700,color:deal.assigned_to?"#111827":"#9CA3AF"}}>{deal.assigned_to?(deal.assigned_to_name||("Staff #"+deal.assigned_to)):"Unassigned"}</div>{String(deal.assigned_to)!==String(me&&me.id)&&<Btn size="sm" onClick={()=>onAssign(deal.deal_number,"me")}>Assign to me</Btn>}<select value="" onChange={e=>{if(e.target.value)onAssign(deal.deal_number,e.target.value);}} style={{padding:"7px 10px",borderRadius:8,border:"1.5px solid #D1D5DB",fontSize:13,background:"#fff"}}><option value="">Assign to…</option>{(staff||[]).filter(a=>String(a.id)!==String(deal.assigned_to)).map(a=><option key={a.id} value={a.id}>{a.name}{a.role==="fleet_manager"?" (Fleet Manager)":""}</option>)}</select></div><div style={{fontSize:12,color:"#6B7280",marginTop:8}}>The first claim emails the broker automatically. Reassigning asks you to confirm and lets you choose whether to notify them.</div>{deal.assigned_to&&<div style={{marginTop:10}}><Btn size="sm" variant="outline" onClick={()=>window.dispatchEvent(new CustomEvent("open-chat",{detail:{dealNumber:deal.deal_number}}))}>💬 Message the broker</Btn></div>}</div>}{(["Approved","Docs Sent","Ready to Pick Up","Completed"].includes(deal.status)||(deal.doc_summary&&deal.doc_summary.requested>0))&&<DocsPanel dealNumber={deal.deal_number} isStaff={true}/>}<NotesPanel dealNumber={deal.deal_number} isStaff={true}/><div style={{background:"#F8FAFC",borderRadius:12,padding:20,marginBottom:20}}><div style={{fontSize:11,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",marginBottom:10}}>Vehicle</div><div style={{fontSize:16,fontWeight:700}}>{deal.vehicle_desc}</div><div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginTop:12}}><div><span style={{fontSize:11,color:"#9CA3AF",display:"block"}}>STOCK #</span><span style={{fontWeight:700}}>{deal.stock_num}</span></div><div><span style={{fontSize:11,color:"#9CA3AF",display:"block"}}>MSRP</span><span style={{fontWeight:700}}>{deal.msrp}</span></div><div><span style={{fontSize:11,color:"#9CA3AF",display:"block"}}>VIN</span><span style={{fontFamily:"monospace",fontSize:12}}>{deal.vin}</span></div></div></div>
-    <div style={{background:"#F8FAFC",borderRadius:12,padding:20,marginBottom:20}}><div style={{fontSize:11,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",marginBottom:10}}>Timeline</div><div style={{display:"flex",gap:24,flexWrap:"wrap"}}>{[["Requested",deal.request_date],["Application",deal.app_date],["Approved",deal.approved_date],["Completed",deal.sold_date]].map(([l,d])=><div key={l}><span style={{fontSize:11,color:"#9CA3AF",display:"block"}}>{l.toUpperCase()}</span><span style={{fontWeight:600,color:d?"#111827":"#D1D5DB"}}>{d||"—"}</span></div>)}</div></div>
-    {deal.notes&&<div style={{background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:10,padding:14,marginBottom:20}}><span style={{fontSize:13,color:"#92400E"}}>📝 {deal.notes}</span></div>}
-    <div style={{background:"#F8FAFC",borderRadius:12,padding:20,marginBottom:16}}><div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Status: <SBadge status={deal.status}/></div><div style={{fontSize:12,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",marginBottom:10}}>Move to:</div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{ADMIN_STATUSES.filter(s=>s!==deal.status).map(s=>{const c=SC[s]||{color:"#6B7280"};return <button key={s} onClick={()=>onStatusChange(deal.deal_number,s)} style={{padding:"8px 16px",borderRadius:8,border:`2px solid ${c.color}`,background:"#fff",color:c.color,fontWeight:700,fontSize:13,cursor:"pointer",transition:"all 0.15s"}} onMouseEnter={e=>{e.target.style.background=c.color;e.target.style.color="#fff";}} onMouseLeave={e=>{e.target.style.background="#fff";e.target.style.color=c.color;}}>{s}</button>;})}</div></div>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
-      <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
-        <Btn variant={deal.vehicle_available?"outline":"success"} onClick={()=>onToggleAvailable(deal.deal_number,deal.vehicle_available)}>{deal.vehicle_available?"✓ Available (remove)":"Mark Vehicle Available → Notify Broker"}</Btn>
-        {availDt&&<span style={{fontSize:12,color:"#059669",fontWeight:600}}>✓ {availDt}</span>}
-        {["Application","Approved","Docs Sent","Ready to Pick Up","Completed"].includes(deal.status)&&<Btn variant="outline" onClick={()=>setShowApp(true)}>📋 View Credit App</Btn>}
+function LogTab({dealNumber}){
+  const[rows,setRows]=useState(null),[lerr,setLerr]=useState('');
+  const load=useCallback(()=>{apiFetch('deals?action=events&deal_number='+encodeURIComponent(dealNumber)).then(r=>{setRows(r);setLerr('');}).catch(e=>setLerr(e.message));},[dealNumber]);
+  useEffect(()=>{load();},[load]);
+  const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note']};
+  const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const roleChip={admin:['Staff','#DBEAFE','#1E40AF'],broker:['Broker','#D1FAE5','#065F46'],system:['System','#F3F4F6','#374151']};
+  return <div>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}><div style={{fontSize:12,color:'#6B7280'}}>Who did what on this deal, newest first.</div><button onClick={load} style={{background:'none',border:'none',color:'#1D4ED8',fontWeight:600,fontSize:12,cursor:'pointer'}}>Refresh</button></div>
+    {lerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{lerr}</div>}
+    {!rows&&!lerr&&<div style={{color:'#9CA3AF',fontSize:13}}>Loading...</div>}
+    {rows&&rows.length===0&&<div style={{background:'#F8FAFC',borderRadius:12,padding:16,fontSize:13,color:'#6B7280'}}>No activity recorded yet. From now on, every action on this deal is logged here with who did it and when.</div>}
+    {rows&&rows.map(e=>{const m=meta[e.action]||['•',String(e.action).replace(/_/g,' ')];const rc=roleChip[e.actor_role]||roleChip.system;return <div key={e.id} style={{display:'flex',gap:12,padding:'10px 0',borderBottom:'1px solid #F3F4F6'}}>
+      <div style={{fontSize:18,width:26,textAlign:'center'}}>{m[0]}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:14,color:'#111827'}}><b>{e.actor_name||'Someone'}</b><span style={{marginLeft:6,background:rc[1],color:rc[2],borderRadius:8,padding:'1px 7px',fontSize:10,fontWeight:700}}>{rc[0]}</span> {m[1]}</div>
+        {e.detail&&<div style={{fontSize:13,color:'#6B7280',marginTop:2,wordBreak:'break-word'}}>{e.detail}</div>}
       </div>
-      <Btn variant="outline" onClick={onClose}>Close</Btn>
+      <div style={{fontSize:11,color:'#9CA3AF',whiteSpace:'nowrap'}}>{fmt(e.created_at)}</div>
+    </div>;})}
+  </div>;
+}
+function CreditTab({dealNumber}){
+  const[info,setInfo]=useState(null),[cerr,setCerr]=useState('');
+  const token=localStorage.getItem('auth_token')||'';
+  useEffect(()=>{let live=true;apiFetch('myapp?deal_number='+encodeURIComponent(dealNumber)).then(r=>{if(live)setInfo(r);}).catch(e=>{if(live)setCerr(e.message);});return()=>{live=false;};},[dealNumber]);
+  const box={background:'#F8FAFC',borderRadius:12,padding:16};
+  const lbl={fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',marginBottom:4};
+  const when=t=>t?new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+  const q='&deal_number='+encodeURIComponent(dealNumber)+'&_t='+encodeURIComponent(token);
+  return <div>
+    {cerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{cerr}</div>}
+    {!info&&!cerr&&<div style={{color:'#9CA3AF',fontSize:13}}>Loading...</div>}
+    {info&&!info.has_app&&<div style={box}>No credit application has been submitted for this deal yet.</div>}
+    {info&&info.has_app&&<>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:6}}>
+        <div style={{fontSize:13,color:'#6B7280'}}>{info.app_type_label} application{info.submitted_at?' · submitted '+when(info.submitted_at):''}</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {info.has_id_file&&<a href={'/api/deals?action=id_file'+q} target='_blank' rel='noreferrer' style={{textDecoration:'none'}}><Btn variant='outline'>🆔 View Customer ID</Btn></a>}
+          <a href={'/api/myapp?action=pdf'+q} download style={{textDecoration:'none'}}><Btn variant='primary'>⬇ Download PDF</Btn></a>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:'#9CA3AF',marginBottom:12}}>Social Security numbers show the last 4 digits only. Opening or downloading this is recorded in the Log tab.</div>
+      {info.sections.map(sec=><div key={sec.title} style={{...box,marginBottom:12}}><div style={{fontSize:12,fontWeight:700,color:'#374151',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10,paddingBottom:6,borderBottom:'1px solid #E5E7EB'}}>{sec.title}</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 24px'}}>{sec.fields.map(([l,v,full],i)=><div key={l+i} style={{gridColumn:full?'1 / -1':'auto',marginBottom:8}}><div style={lbl}>{l}</div><div style={{fontWeight:600,fontSize:14,color:'#111827',whiteSpace:'pre-wrap'}}>{v}</div></div>)}</div></div>)}
+    </>}
+  </div>;
+}
+function DealModal({deal,onClose,onStatusChange,onToggleAvailable,staff,me,onAssign,startTab}){
+  const pre=!!deal&&['Request','Dead'].includes(deal.status);
+  const[tab,setTab]=useState(startTab||(pre?'status':'assignment'));
+  if(!deal)return null;
+  const availDt=deal.vehicle_available_at?new Date(deal.vehicle_available_at).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}):null;
+  const sum=deal.doc_summary,docsNeed=!!sum&&sum.requested>0&&sum.received<sum.requested;
+  const lbl={fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6};
+  const card={background:'#F8FAFC',borderRadius:12,padding:16};
+  const tabs=[['assignment','Assignment'],['credit','Credit'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')],['status','Status'],['notes','Notes'],['log','Log']];
+  return <Modal title={'Deal #'+deal.deal_number} onClose={onClose} extraWide>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:18}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+        <div style={card}><div style={lbl}>Customer</div><div style={{fontSize:17,fontWeight:800,marginBottom:4}}>{deal.customer_name}</div>{deal.customer_phone&&<div style={{fontSize:13}}>📞 {deal.customer_phone}</div>}{deal.customer_email&&<div style={{fontSize:13,wordBreak:'break-all'}}>✉️ {deal.customer_email}</div>}</div>
+        <div style={card}><div style={lbl}>Broker</div><div style={{fontSize:15,fontWeight:700}}>{deal.broker_name}</div><div style={{fontSize:12,color:'#6B7280'}}>{deal.broker_code}</div>{deal.broker_contact&&<div style={{fontSize:13,marginTop:4}}>{deal.broker_contact}</div>}{deal.broker_email&&<div style={{fontSize:12,wordBreak:'break-all'}}>✉️ {deal.broker_email}</div>}</div>
+      </div>
+      <div style={{background:'linear-gradient(135deg,#0F172A,#1E3A8A)',borderRadius:14,padding:18,color:'#fff'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:6}}><div style={{fontSize:11,fontWeight:700,color:'#93C5FD',textTransform:'uppercase',letterSpacing:'0.05em'}}>🚗 Car</div><SBadge status={deal.status}/></div>
+        <div style={{fontSize:18,fontWeight:800,lineHeight:1.25}}>{deal.vehicle_desc}</div>
+        <div style={{display:'flex',gap:18,flexWrap:'wrap',marginTop:10,fontSize:12,color:'#CBD5E1'}}>{deal.stock_num&&<span>Stock # <b style={{color:'#fff'}}>{deal.stock_num}</b></span>}{deal.msrp&&<span>MSRP <b style={{color:'#fff'}}>{deal.msrp}</b></span>}{deal.vin&&<span style={{fontFamily:'monospace'}}>VIN {deal.vin}</span>}</div>
+        <div style={{marginTop:10,fontSize:12,fontWeight:700,color:deal.vehicle_available?'#6EE7B7':'#FCD34D'}}>{deal.vehicle_available?'✓ Confirmed available'+(availDt?' · '+availDt:''):'Availability not confirmed yet'}</div>
+      </div>
     </div>
+    <div style={{display:'flex',gap:4,borderBottom:'2px solid #E5E7EB',marginBottom:16,flexWrap:'wrap'}}>{tabs.map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{padding:'10px 16px',border:'none',background:'none',cursor:'pointer',fontWeight:700,fontSize:14,color:tab===k?'#1D4ED8':'#6B7280',borderBottom:tab===k?'3px solid #1D4ED8':'3px solid transparent',marginBottom:-2}}>{l}{k==='docs'&&docsNeed&&<span style={{marginLeft:6,background:'#DC2626',color:'#fff',borderRadius:10,fontSize:10,padding:'1px 6px'}}>!</span>}</button>)}</div>
+    {tab==='assignment'&&(pre?<div style={card}>Assignment opens once the credit application has been received.</div>:onAssign?<div style={{background:'#EFF6FF',border:'1.5px solid #BFDBFE',borderRadius:12,padding:20}}>
+      <div style={{fontSize:11,fontWeight:700,color:'#1D4ED8',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10}}>Assigned to</div>
+      <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}><div style={{fontSize:17,fontWeight:700,color:deal.assigned_to?'#111827':'#9CA3AF'}}>{deal.assigned_to?(deal.assigned_to_name||('Staff #'+deal.assigned_to)):'Unassigned'}</div>{String(deal.assigned_to)!==String(me&&me.id)&&<Btn size='sm' onClick={()=>onAssign(deal.deal_number,'me')}>Assign to me</Btn>}<select value='' onChange={e=>{if(e.target.value)onAssign(deal.deal_number,e.target.value);}} style={{padding:'7px 10px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:13,background:'#fff'}}><option value=''>Assign to...</option>{(staff||[]).filter(a=>String(a.id)!==String(deal.assigned_to)).map(a=><option key={a.id} value={a.id}>{a.name}{a.role==='fleet_manager'?' (Fleet Manager)':''}</option>)}</select></div>
+      <div style={{fontSize:12,color:'#6B7280',marginTop:10}}>The first claim emails the broker automatically. Reassigning asks you to confirm and lets you choose whether to notify them.</div>
+      {deal.assigned_to&&<div style={{marginTop:12}}><Btn size='sm' variant='outline' onClick={()=>window.dispatchEvent(new CustomEvent('open-chat',{detail:{dealNumber:deal.deal_number}}))}>💬 Message the broker</Btn></div>}
+    </div>:<div style={card}>{deal.assigned_to_name?'Handled by '+deal.assigned_to_name:'Not assigned yet'}</div>)}
+    {tab==='credit'&&<CreditTab dealNumber={deal.deal_number}/>}
+    {tab==='docs'&&(pre?<div style={card}>Documents open once the credit application has been received.</div>:<DocsPanel dealNumber={deal.deal_number} isStaff={true}/>)}
+    {tab==='status'&&<div>
+      <div style={{...card,marginBottom:14}}><div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Status: <SBadge status={deal.status}/></div><div style={lbl}>Move to:</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{ADMIN_STATUSES.filter(s=>s!==deal.status).map(s=>{const c=SC[s]||{color:'#6B7280'};return <button key={s} onClick={()=>onStatusChange(deal.deal_number,s)} style={{padding:'8px 16px',borderRadius:8,border:`2px solid ${c.color}`,background:'#fff',color:c.color,fontWeight:700,fontSize:13,cursor:'pointer',transition:'all 0.15s'}} onMouseEnter={e=>{e.target.style.background=c.color;e.target.style.color='#fff';}} onMouseLeave={e=>{e.target.style.background='#fff';e.target.style.color=c.color;}}>{s}</button>;})}</div></div>
+      <div style={{...card,marginBottom:14}}><div style={lbl}>Car availability</div><div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}><Btn variant={deal.vehicle_available?'outline':'success'} onClick={()=>onToggleAvailable(deal.deal_number,deal.vehicle_available)}>{deal.vehicle_available?'✓ Available (remove)':'Mark Vehicle Available → Notify Broker'}</Btn>{availDt&&<span style={{fontSize:12,color:'#059669',fontWeight:600}}>✓ {availDt}</span>}</div></div>
+      <div style={card}><div style={lbl}>Timeline</div><div style={{display:'flex',gap:24,flexWrap:'wrap'}}>{[['Requested',deal.request_date],['Application',deal.app_date],['Approved',deal.approved_date],['Completed',deal.sold_date]].map(([l,d])=><div key={l}><span style={{fontSize:11,color:'#9CA3AF',display:'block'}}>{l.toUpperCase()}</span><span style={{fontWeight:600,color:d?'#111827':'#D1D5DB'}}>{d||'—'}</span></div>)}</div></div>
+    </div>}
+    {tab==='notes'&&<div>{deal.notes&&<div style={{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:10,padding:14,marginBottom:14}}><span style={{fontSize:13,color:'#92400E'}}>📝 {deal.notes}</span></div>}<NotesPanel dealNumber={deal.deal_number} isStaff={true}/></div>}
+    {tab==='log'&&<LogTab dealNumber={deal.deal_number}/>}
+    <div style={{display:'flex',justifyContent:'flex-end',marginTop:16}}><Btn variant='outline' onClick={onClose}>Close</Btn></div>
   </Modal>;
 }
-
 function BrokerModal({broker,onClose,onResetPW}){
   const[deals,setDeals]=useState([]),[loading,setL]=useState(true),[sf,setSF]=useState("All"),[selDeal,setSelDeal]=useState(null),[editing,setEditing]=useState(false);
   const[form,setForm]=useState({company_name:broker.company_name||"",contact_name:broker.contact_name||"",email:broker.email||"",phone:broker.phone||"",username:broker.username||""});
@@ -551,6 +614,7 @@ function AdminPortal({user,onLogout}){
   const[tab,setTab]=useState("dashboard"),[deals,setDeals]=useState([]),[inv,setInv]=useState([]),[brokers,setBrokers]=useState([]),[admins,setAdmins]=useState([]),[toast,setToast]=useState(null),[loading,setL]=useState(false);
   const[viewMode,setViewMode]=useState(localStorage.getItem("admin_view")==="mine"?"mine":"all");
   const[reassign,setReassign]=useState(null),[rsNotify,setRsNotify]=useState(true),[rsMsg,setRsMsg]=useState(''),[rsBusy,setRsBusy]=useState(false);
+  const[selTab,setSelTab]=useState(null);
   const[sf,setSF]=useState("All"),[bf,setBF]=useState("All"),[bs,setBS]=useState(""),[gs,setGS]=useState(""),[selDeal,setSelDeal]=useState(null),[selBroker,setSelBroker]=useState(null),[resetBroker,setResetBroker]=useState(null);
   const[sab,setSAB]=useState(false),[saa,setSAA]=useState(false),[csv,setCSV]=useState(null),[invSearch,setIS]=useState("");
   const[nb,setNB]=useState({company_name:"",contact_name:"",email:"",phone:"",username:"",password:""});
@@ -587,7 +651,7 @@ function AdminPortal({user,onLogout}){
   return <div style={{minHeight:"100vh",background:"#F1F5F9",fontFamily:"system-ui,-apple-system,sans-serif"}}>
     <div style={{background:"#0F172A",padding:"0 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <div style={{display:"flex",alignItems:"center",gap:16,padding:"16px 0"}}><span style={{fontSize:26}}>🚗</span><div><div style={{color:"#fff",fontWeight:800,fontSize:18}}>BROOKLYN CDJR</div><div style={{color:"#93C5FD",fontSize:12,letterSpacing:"0.05em"}}>ADMIN PORTAL</div></div></div>
-      <div style={{display:"flex",alignItems:"center",gap:12}}><NotificationsBell onOpenDeal={d=>setSelDeal(d)}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
+      <div style={{display:"flex",alignItems:"center",gap:12}}><NotificationsBell onOpenDeal={(d,t)=>{setSelTab(({new_request:"status",credit_app:"credit",assigned:"assignment",reassigned:"assignment",docs_uploaded:"docs",docs_complete:"docs",note:"notes"})[t]||null);setSelDeal(d);}}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
     </div>
     <div style={{background:"#fff",borderBottom:"1px solid #E5E7EB",padding:"0 28px",display:"flex",gap:4,overflowX:"auto"}}>{TAB("dashboard","📊 Dashboard")}{TAB("pipeline","🔄 Pipeline")}{TAB("brokers","👥 Brokers")}{TAB("inventory","🚘 Inventory")}{TAB("settings","⚙️ Settings")}</div>
     <div style={{maxWidth:1200,margin:"0 auto",padding:"28px 20px"}}>
@@ -634,7 +698,7 @@ function AdminPortal({user,onLogout}){
         {saa&&<Modal title="Add User" onClose={()=>setSAA(false)}><Inp label="Role" value={na.role||"Admin"} onChange={v=>setNA(p=>({...p,role:v}))} options={["Admin","Fleet Manager"]}/><Inp label="Full Name" value={na.name} onChange={v=>setNA(p=>({...p,name:v}))} required/><Inp label="Username" value={na.username} onChange={v=>setNA(p=>({...p,username:v}))} required/><Inp label="Email" value={na.email} onChange={v=>setNA(p=>({...p,email:v}))} type="email" required/><Inp label="Password" value={na.password} onChange={v=>setNA(p=>({...p,password:v}))} type="password" required hint="Min 8"/><Inp label="Confirm" value={na.confirm_password} onChange={v=>setNA(p=>({...p,confirm_password:v}))} type="password" required/><div style={{marginBottom:16}}><label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}><input type="checkbox" checked={na.notify_email} onChange={e=>setNA(p=>({...p,notify_email:e.target.checked}))} style={{width:16,height:16}}/><span style={{fontSize:14,fontWeight:600}}>Receive deal notifications</span></label></div><div style={{display:"flex",gap:12,justifyContent:"flex-end"}}><Btn variant="outline" onClick={()=>setSAA(false)}>Cancel</Btn><Btn onClick={addAdmin} loading={loading} disabled={!na.username||!na.email||na.password.length<8||na.password!==na.confirm_password}>Create Admin</Btn></div></Modal>}
       </>}
     </div>
-    {selDeal&&<DealModal deal={selDeal} onClose={()=>setSelDeal(null)} onStatusChange={updateStatus} onToggleAvailable={toggleAvailable} staff={admins} me={user} onAssign={assignDeal}/>}
+    {selDeal&&<DealModal key={selDeal.deal_number} deal={selDeal} startTab={selTab} onClose={()=>{setSelDeal(null);setSelTab(null);}} onStatusChange={updateStatus} onToggleAvailable={toggleAvailable} staff={admins} me={user} onAssign={assignDeal}/>}
     {reassign&&<Modal title='Reassign this deal?' onClose={()=>setReassign(null)}>
       <div style={{fontSize:15,color:'#111827',marginBottom:14,lineHeight:1.5}}>Are you sure you want to reassign Deal #{reassign.dn} from <b>{reassign.currentName}</b> to <b>{reassign.targetName}</b>?</div>
       <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',fontSize:14,marginBottom:12}}><input type='checkbox' checked={rsNotify} onChange={e=>setRsNotify(e.target.checked)} style={{width:16,height:16}}/>Notify the broker ({reassign.broker}) by email and in their chat</label>

@@ -1,5 +1,6 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny } from './_helpers.js'
+import { logEvent } from './_audit.js'
 
 const MAX_LEN = 2000
 const RECENT_DAYS = 14
@@ -89,6 +90,7 @@ export default async function handler(req, res) {
     const { data: a } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
     const { error } = await supabase.from('deal_notes').insert({ deal_id: deal.id, author_role: 'admin', author_id: session.user_id, author_name: a ? a.name : 'Brooklyn CDJR', body: text, internal: true })
     if (error) return err(res, friendly(error), 500)
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, name: a ? a.name : null, action: 'note_added', detail: 'Internal note added' })
     return ok(res, { ok: true }, 201)
   }
 

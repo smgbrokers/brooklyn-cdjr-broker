@@ -1,6 +1,7 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny } from './_helpers.js'
 import { buildSections, renderPdf } from './_credit_app_view.js'
+import { logEvent } from './_audit.js'
 
 // A broker sees their own credit application (read-only) and can download it as a PDF. Staff can use it too.
 export default async function handler(req, res) {
@@ -37,6 +38,7 @@ export default async function handler(req, res) {
   const { data: apps } = await supabase.from('credit_apps').select('*').eq('deal_id', deal.id).order('id', { ascending: false }).limit(1)
   const app = apps && apps[0] ? apps[0] : null
   const view = app ? buildSections(app) : null
+  if (isAdmin && app) await logEvent({ dealId: deal.id, role: 'admin', userId: who.user_id, action: action === 'pdf' ? 'downloaded_credit_pdf' : 'viewed_credit_app', detail: 'Credit application', dedupeMinutes: action === 'pdf' ? 0 : 15 })
   const dealInfo = {
     deal_number: deal.deal_number, customer_name: deal.customer_name, customer_phone: deal.customer_phone, customer_email: deal.customer_email,
     vehicle_desc: deal.vehicle_desc, stock_num: deal.stock_num, vin: deal.vin, status: deal.status,
@@ -64,5 +66,5 @@ export default async function handler(req, res) {
     return
   }
 
-  return ok(res, { deal: dealInfo, has_app: !!app, app_type: view ? view.app_type : null, app_type_label: view ? view.app_type_label : null, submitted_at: app ? app.submitted_at : null, sections: view ? view.sections : [] })
+  return ok(res, { deal: dealInfo, has_app: !!app, has_id_file: !!(isAdmin && app && app.id_file_path), id_file_name: isAdmin && app ? (app.id_file_name || null) : null, app_type: view ? view.app_type : null, app_type_label: view ? view.app_type_label : null, submitted_at: app ? app.submitted_at : null, sections: view ? view.sections : [] })
 }

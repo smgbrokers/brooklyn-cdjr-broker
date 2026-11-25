@@ -1,6 +1,7 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAdmin, requireBroker, requireAny, sendEmail, sendEmailWithAttachment, notifyAdminsNewRequest, notifyBrokerRequestReceived, notifyBrokerVehicleAvailable, generateCreditAppHtml } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
+import { logEvent } from './_audit.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -71,6 +72,17 @@ export default async function handler(req, res) {
     }
   }
 
+  // GET the audit trail for a deal (staff only)
+  if (req.method === 'GET' && action === 'events') {
+    const session = await requireAdmin(req, res)
+    if (!session) return
+    const { data: evDeal } = await supabase.from('deals').select('id').eq('deal_number', req.query.deal_number).single()
+    if (!evDeal) return err(res, 'Deal not found', 404)
+    const { data: events, error: evErr } = await supabase.from('deal_events').select('*').eq('deal_id', evDeal.id).order('created_at', { ascending: false }).limit(300)
+    if (evErr) return err(res, String(evErr.message).includes('deal_events') ? 'The activity log needs a one-time database update first.' : evErr.message, 500)
+    return ok(res, events || [])
+  }
+
   // GET credit app data
   if (req.method === 'GET' && action === 'credit_app') {
     const session = await requireAdmin(req, res)
@@ -109,10 +121,11 @@ export default async function handler(req, res) {
   if (req.method === 'GET' && action === 'id_file') {
     const idToken = req.query._t
     if (!idToken) return err(res, 'Unauthorized', 401)
-    const { data: idSess } = await supabase.from('sessions').select('id').eq('token', idToken).eq('role', 'admin').gt('expires_at', new Date().toISOString()).single()
+    const { data: idSess } = await supabase.from('sessions').select('id,user_id').eq('token', idToken).eq('role', 'admin').gt('expires_at', new Date().toISOString()).single()
     if (!idSess) return err(res, 'Unauthorized', 401)
     const { data: idDeal } = await supabase.from('deals').select('id').eq('deal_number', req.query.deal_number).single()
     if (!idDeal) return err(res, 'Deal not found', 404)
+    await logEvent({ dealId: idDeal.id, role: 'admin', userId: idSess.user_id, action: 'viewed_customer_id', detail: 'Customer ID', dedupeMinutes: 15 })
     const { data: idApp } = await supabase.from('credit_apps').select('id_file_path').eq('deal_id', idDeal.id).not('id_file_path', 'is', null).order('id', { ascending: false }).limit(1).maybeSingle()
     if (!idApp || !idApp.id_file_path) return err(res, 'No customer ID on file', 404)
     const { data: signed, error: signErr } = await supabase.storage.from('credit-app-ids').createSignedUrl(idApp.id_file_path, 120)
@@ -144,6 +157,7 @@ export default async function handler(req, res) {
     }
     await notifyAdminsNewRequest(deal, broker)
     await notifyStaff({ type: 'new_request', dealNumber: deal_number, title: 'New car request', body: broker.company_name + ' requested ' + (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
+    await logEvent({ dealNumber: deal_number, role: 'broker', userId: session.user_id, name: broker.company_name, action: 'requested', detail: (deal.vehicle_desc || 'a vehicle') + ' for ' + deal.customer_name })
     await notifyBrokerRequestReceived(deal, broker)
     return ok(res, { ok: true, deal_number }, 201)
   }
@@ -196,6 +210,7 @@ export default async function handler(req, res) {
     if (error) return err(res, error.message, 500)
     await supabase.from('deals').update({ status: 'Application', app_date: new Date().toISOString().split('T')[0] }).eq('id', deal.id)
     await notifyStaff({ type: 'credit_app', dealNumber: deal_number, title: 'Credit application received', body: [applicant.first_name, applicant.last_name].filter(Boolean).join(' ') + ' - ' + (deal.vehicle_desc || 'vehicle') + ' - ' + (broker ? broker.company_name : '') })
+    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, name: broker ? broker.company_name : null, action: 'credit_app_submitted', detail: ({ individual: 'Individual', individual_cosigner: 'Individual + Co-Signer', business: 'Business', business_cosigner: 'Business + Co-Signer' }[app_type || 'individual'] || 'Individual') + (idBuf ? ', customer ID attached' : '') })
     // Ask for the worksheet in the Docs tab (the form uploads it right after submitting)
     await supabase.from('deal_docs').insert({ deal_id: deal.id, doc_key: 'worksheet', label: 'Worksheet', max_files: 1, files_count: 0, requested_by: null, requested_by_name: 'Credit application' })
     // Customer ID: store privately, then attach it to the admin email
@@ -248,6 +263,10 @@ export default async function handler(req, res) {
     const extraMsg = isReassign && notifyBroker ? String(message || '').trim().slice(0, 500) : ''
     const { error: assignErr } = await supabase.from('deals').update({ assigned_to: assignee.id, assigned_at: new Date().toISOString() }).eq('id', deal.id)
     if (assignErr) return err(res, assignErr.message.includes('assigned_') ? 'The database needs the assignment update first (assigned_to column missing).' : assignErr.message, 500)
+    if (changed) {
+      const { data: prevOwner } = prevOwnerId ? await supabase.from('admins').select('id,name').eq('id', prevOwnerId).single() : { data: null }
+      await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: isReassign ? 'reassigned' : 'assigned', detail: (prevOwner ? prevOwner.name + ' \u2192 ' : '') + assignee.name + (isReassign ? (notifyBroker ? ' (broker notified' + (extraMsg ? ' with a message' : '') + ')' : ' (broker not notified)') : '') })
+    }
     if (changed && notifyBroker) {
       const sysText = hadAssignee ? 'Your deal is now being handled by ' + assignee.name + '.' + (extraMsg ? ' ' + extraMsg : '') : assignee.name + ' is now working on your file.'
       await supabase.from('deal_messages').insert({ deal_id: deal.id, sender_role: 'system', sender_id: null, sender_name: 'Brooklyn CDJR', body: sysText })
@@ -304,6 +323,8 @@ export default async function handler(req, res) {
       if (vehicle_available) updates.vehicle_available_at = new Date().toISOString()
     }
     await supabase.from('deals').update(updates).eq('deal_number', deal_number)
+    if (status && status !== deal.status) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'status_changed', detail: deal.status + ' \u2192 ' + status })
+    if (vehicle_available !== undefined && !!vehicle_available !== !!deal.vehicle_available) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: vehicle_available ? 'vehicle_confirmed' : 'vehicle_unconfirmed', detail: deal.vehicle_desc || null })
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker?.email) await notifyBrokerVehicleAvailable(deal, broker)

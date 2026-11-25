@@ -1,6 +1,7 @@
 import supabase from './_db.js'
 import { cors, ok, err, requireAny, sendEmail } from './_helpers.js'
 import { notifyStaff } from './_notify.js'
+import { logEvent } from './_audit.js'
 
 const BUCKET = 'deal-docs'
 const MAX_BYTES = 3200000
@@ -38,6 +39,7 @@ export default async function handler(req, res) {
     if (!sess) return err(res, 'Unauthorized', 401)
     const { data: f } = await supabase.from('deal_doc_files').select('*').eq('id', req.query.id).single()
     if (!f) return err(res, 'File not found', 404)
+    if (sess.role === 'admin') await logEvent({ dealId: f.deal_id, role: 'admin', userId: sess.user_id, action: 'doc_viewed', detail: f.file_name || 'a document', dedupeMinutes: 15 })
     if (sess.role !== 'admin') {
       const { data: d } = await supabase.from('deals').select('id,broker_id').eq('id', f.deal_id).single()
       if (!d || String(d.broker_id) !== String(sess.user_id)) return err(res, 'Forbidden', 403)
@@ -98,6 +100,7 @@ export default async function handler(req, res) {
     const rows = fresh.map(t => ({ deal_id: deal.id, doc_key: t.key, label: t.label, max_files: t.max, files_count: 0, requested_by: session.user_id, requested_by_name: me ? me.name : null }))
     const { error: insErr } = await supabase.from('deal_docs').insert(rows)
     if (insErr) return err(res, friendly(insErr), 500)
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'docs_requested', detail: fresh.map(t => t.label).join(', ') })
     const note = String(body.message || '').trim().slice(0, 500)
     const list = fresh.map(t => t.label)
     // Tell the broker: a line in their chat and an email (both best effort)
@@ -118,6 +121,7 @@ export default async function handler(req, res) {
     const { data: item } = await supabase.from('deal_docs').select('*').eq('deal_id', deal.id).eq('doc_key', body.doc_key).single()
     if (!item) return err(res, 'That request was not found', 404)
     if (item.files_count > 0) return err(res, 'Files were already uploaded for this document. Remove the files first.')
+    await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'docs_cancelled', detail: item.label })
     const { error } = await supabase.from('deal_docs').delete().eq('id', item.id)
     if (error) return err(res, friendly(error), 500)
     return ok(res, { ok: true })
@@ -148,6 +152,7 @@ export default async function handler(req, res) {
       return err(res, friendly(fErr), 500)
     }
     await supabase.from('deal_docs').update({ files_count: item.files_count + 1 }).eq('id', item.id)
+    await logEvent({ dealId: deal.id, role: 'broker', userId: session.user_id, action: 'doc_uploaded', detail: item.label + ' (' + (f.name || 'file') + ')' })
 
     // Tell the deal owner (or everyone on staff if nobody has claimed it)
     const { data: all } = await supabase.from('deal_docs').select('id,files_count').eq('deal_id', deal.id)
@@ -171,6 +176,7 @@ export default async function handler(req, res) {
       if (String(deal.broker_id) !== String(session.user_id)) return err(res, 'Forbidden', 403)
       if (!['Application', 'Approved'].includes(deal.status)) return err(res, 'This deal has moved on. Please contact the Brooklyn CDJR team to change a document.', 403)
     }
+    await logEvent({ dealId: deal.id, role: isAdmin ? 'admin' : 'broker', userId: session.user_id, action: 'doc_removed', detail: f.file_name || 'a file' })
     await supabase.storage.from(BUCKET).remove([f.file_path])
     const { error } = await supabase.from('deal_doc_files').delete().eq('id', f.id)
     if (error) return err(res, friendly(error), 500)
