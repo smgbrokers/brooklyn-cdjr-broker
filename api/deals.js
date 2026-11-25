@@ -119,6 +119,11 @@ export default async function handler(req, res) {
     const deal = { deal_number, broker_id: session.user_id, vin, stock_num: vehicle.stock_num, vehicle_desc: `${vehicle.year_make_model} ${vehicle.trim}`.trim(), msrp: vehicle.msrp, customer_name, customer_phone: customer_phone || '', customer_email: customer_email || '', status: 'Request', request_date: new Date().toISOString().split('T')[0], notes: notes || '' }
     const { error } = await supabase.from('deals').insert(deal)
     if (error) return err(res, error.message, 500)
+    // Start the notes thread with the broker request note (best effort)
+    if (notes && String(notes).trim()) {
+      const { data: newDeal } = await supabase.from('deals').select('id').eq('deal_number', deal_number).single()
+      if (newDeal) await supabase.from('deal_notes').insert({ deal_id: newDeal.id, author_role: 'broker', author_id: session.user_id, author_name: broker.company_name, body: String(notes).trim().slice(0, 2000), internal: false })
+    }
     await notifyAdminsNewRequest(deal, broker)
     await notifyBrokerRequestReceived(deal, broker)
     return ok(res, { ok: true, deal_number }, 201)
