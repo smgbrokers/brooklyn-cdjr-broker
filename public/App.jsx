@@ -229,7 +229,8 @@ function ChatWidget(){
   const scrollRef=useRef(null),marked=useRef({});
   const loadList=useCallback(async()=>{try{const r=await apiFetch('messages?action=conversations');setConvos(r.conversations||[]);setMeInfo(r.me||null);setListErr('');}catch(e){setListErr(e.message);}},[]);
   const loadThread=useCallback(async(dn)=>{try{const m=await apiFetch('messages?deal_number='+encodeURIComponent(dn));setMsgs(m);setTErr('');const lastId=m.length?m[m.length-1].id:0;if(marked.current[dn]!==lastId){marked.current[dn]=lastId;apiFetch('messages?action=read',{method:'POST',body:{deal_number:dn}}).then(()=>loadList()).catch(()=>{});}}catch(e){setTErr(e.message);}},[loadList]);
-  useEffect(()=>{loadList();const t=setInterval(loadList,20000);return()=>clearInterval(t);},[loadList]);
+  useEffect(()=>{loadList();const t=setInterval(loadList,45000);return()=>clearInterval(t);},[loadList]);
+  useLive(['msgs','events'],()=>{loadList();});
   useEffect(()=>{if(isStaff)apiFetch('admins').then(r=>setStaff(Array.isArray(r)?r:[])).catch(()=>{});},[isStaff]);
   useEffect(()=>{const h=e=>{const dn=e.detail&&e.detail.dealNumber;setOpen(true);if(dn)setActive(dn);};window.addEventListener('open-chat',h);return()=>window.removeEventListener('open-chat',h);},[]);
   useEffect(()=>{if(!open||!active)return;setMsgs([]);setTErr('');loadThread(active);const t=setInterval(()=>loadThread(active),6000);return()=>clearInterval(t);},[open,active,loadThread]);
@@ -297,6 +298,7 @@ function DocsPanel({dealNumber,isStaff,onChange}){
   const token=localStorage.getItem('auth_token')||'';
   const load=useCallback(async()=>{try{const r=await apiFetch('docs?deal_number='+encodeURIComponent(dealNumber));setData(r);setDerr('');setPick(p=>{if(Object.keys(p).length)return p;const o={};r.types.forEach(t=>{o[t.key]=r.items.length===0?!!t.def:false;});return o;});}catch(e){setDerr(e.message);}},[dealNumber]);
   useEffect(()=>{load();},[load]);
+  useLive(['events'],()=>{load();});
   const done=()=>{if(onChange)onChange();};
   async function act(tag,fn){setBusy(tag);setDerr('');try{await fn();await load();done();return true;}catch(e){setDerr(e.message);return false;}finally{setBusy('');}}
   const request=()=>act('req',async()=>{const items=Object.keys(pick).filter(k=>pick[k]);await apiFetch('docs?action=request',{method:'POST',body:{deal_number:dealNumber,items,message:msg}});setMsg('');setPick({});});
@@ -349,6 +351,7 @@ function BrokerDealModal({dealNumber,startTab,deal,onClose,onRefresh}){
   const[tab,setTab]=useState(startTab||'overview'),[info,setInfo]=useState(null),[ierr,setIerr]=useState('');
   const token=localStorage.getItem('auth_token')||'';
   useEffect(()=>{let live=true;apiFetch('myapp?deal_number='+encodeURIComponent(dealNumber)).then(r=>{if(live)setInfo(r);}).catch(e=>{if(live)setIerr(e.message);});return()=>{live=false;};},[dealNumber]);
+  useLive(['events'],()=>{apiFetch('myapp?deal_number='+encodeURIComponent(dealNumber)).then(r=>setInfo(r)).catch(()=>{});});
   const d=(info&&info.deal)||deal||{};
   const sum=deal&&deal.doc_summary,need=!!sum&&sum.requested>0&&sum.received<sum.requested;
   const tabs=[['overview','Overview'],['app','Credit App'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')]];
@@ -390,6 +393,7 @@ function TeamPanel({broker,onChanged,brokerId}){
   const[data,setData]=useState(null),[terr,setTerr]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(''),[adding,setAdding]=useState(false),[form,setForm]=useState(blank),[ferr,setFerr]=useState(''),[reset,setReset]=useState(null),[newPw,setNewPw]=useState(''),[rm,setRm]=useState(null);
   const load=useCallback(async()=>{try{setData(await apiFetch('brokers?action=team'+(brokerId?'&broker_id='+brokerId:'')));setTerr('');}catch(e){setTerr(e.message);}},[brokerId]);
   useEffect(()=>{load();},[load]);
+  useLive(['team'],()=>{load();});
   async function run(tag,action,payload){setBusy(tag);setFerr('');setNote('');try{await apiFetch('brokers?action='+action,{method:'POST',body:brokerId?{...payload,broker_id:brokerId}:payload});await load();if(onChanged)onChanged();return true;}catch(e){setFerr(e.message);return false;}finally{setBusy('');}}
   async function addUser(){const okd=await run('add','team_add',form);if(okd){setAdding(false);setForm(blank);setNote('Added. Give them their username and password so they can sign in.');}}
   async function toggleSuspend(u){const okd=await run('s-'+u.id,'team_update',{id:u.id,suspended:!u.suspended});if(okd)setNote(u.suspended?u.name+' can sign in again.':u.name+' is suspended and was signed out. Their deals are kept.');}
@@ -541,15 +545,46 @@ function StatsLoader({brokerId,owner,isStaff}){
   const url='deals?action=stats'+(brokerId?'&broker_id='+brokerId:'')+(owner&&owner!=='all'?'&owner='+owner:'');
   const load=useCallback(async()=>{try{setStats(await apiFetch(url));setSerr('');}catch(e){setSerr(e.message);}},[url]);
   useEffect(()=>{setStats(null);load();},[load]);
+  useLive(['events','deals'],()=>{load();});
   async function setPaid(dn,paid,ref){setBusyDeal(dn);try{await apiFetch('deals?action=payout',{method:'PUT',body:{deal_number:dn,paid,check_ref:ref||''}});await load();}catch(e){setSerr(e.message);}finally{setBusyDeal('');}}
   if(serr&&!stats)return <div style={{padding:24,color:'#DC2626',fontSize:14}}>{serr}</div>;
   if(!stats)return <div style={{padding:40,textAlign:'center',color:'#9CA3AF'}}>Loading stats...</div>;
   return <div>{serr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{serr}</div>}<StatsView stats={stats} isStaff={!!isStaff} onPay={(dn,ref)=>setPaid(dn,true,ref)} onUnpay={dn=>setPaid(dn,false)} busyDeal={busyDeal}/></div>;
 }
+// Live updates: one small timer asks the server what changed, and each screen reloads only what it needs.
+// It does not run while the tab is hidden, and it slows down when nobody is touching the page.
+function startLivePulse(fetchSig,opts={}){
+  const win=opts.win||window,doc=opts.doc||document,active=opts.active||8000,idle=opts.idle||30000,idleAfter=opts.idleAfter||300000;
+  let last=null,stopped=false,timer=null,busy=false,lastActive=Date.now();
+  const bump=()=>{lastActive=Date.now();};
+  async function tick(){
+    if(stopped||busy||doc.hidden)return;
+    busy=true;
+    try{
+      const sig=await fetchSig();
+      if(sig&&typeof sig==='object'){
+        if(last){const changed=Object.keys(sig).filter(k=>String(sig[k])!==String(last[k]));if(changed.length)win.dispatchEvent(new CustomEvent('live-update',{detail:{changed}}));}
+        last=sig;
+      }
+    }catch(e){}
+    finally{busy=false;}
+  }
+  function loop(){timer=setTimeout(async()=>{await tick();if(!stopped)loop();},(Date.now()-lastActive>idleAfter)?idle:active);}
+  const wake=()=>{if(!doc.hidden){bump();tick();}};
+  const evs=['mousemove','keydown','click','touchstart','scroll'];
+  evs.forEach(e=>win.addEventListener(e,bump,{passive:true}));
+  doc.addEventListener('visibilitychange',wake);win.addEventListener('focus',wake);win.addEventListener('online',wake);
+  tick();loop();
+  return()=>{stopped=true;clearTimeout(timer);evs.forEach(e=>win.removeEventListener(e,bump));doc.removeEventListener('visibilitychange',wake);win.removeEventListener('focus',wake);win.removeEventListener('online',wake);};
+}
+function LivePulse(){useEffect(()=>startLivePulse(async()=>{const r=await apiFetch('deals?action=pulse');return r&&r.sig;}),[]);return null;}
+const liveMatches=(keys,changed)=>!keys||keys.some(k=>changed.includes(k));
+function useLive(keys,fn){const ref=useRef(fn);ref.current=fn;useEffect(()=>{const h=e=>{const ch=(e.detail&&e.detail.changed)||[];if(liveMatches(keys,ch))ref.current(ch);};window.addEventListener('live-update',h);return()=>window.removeEventListener('live-update',h);},[]);}
 function NotesPanel({dealNumber,isStaff}){
   const[notes,setNotes]=useState(null),[text,setText]=useState(''),[busy,setBusy]=useState(false),[nerr,setNerr]=useState('');
   const load=useCallback(async()=>{try{setNotes(await apiFetch('notes?deal_number='+encodeURIComponent(dealNumber)));setNerr('');if(isStaff){apiFetch('notes?action=seen',{method:'POST',body:{deal_number:dealNumber}}).then(()=>window.dispatchEvent(new Event('notes-seen'))).catch(()=>{});}}catch(e){setNerr(e.message);}},[dealNumber,isStaff]);
   useEffect(()=>{load();},[load]);
+  useLive(['events'],()=>{load();});
   async function add(){if(!text.trim())return;setBusy(true);try{await apiFetch('notes',{method:'POST',body:{deal_number:dealNumber,body:text}});setText('');await load();}catch(e){setNerr(e.message);}finally{setBusy(false);}}
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   return <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:12,padding:20,marginBottom:20}}>
@@ -564,7 +599,8 @@ function NotesPanel({dealNumber,isStaff}){
 function NotificationsBell({onOpenDeal}){
   const[data,setData]=useState({count:0,items:[],setup_needed:false}),[open,setOpen]=useState(false);
   const refresh=useCallback(async()=>{try{const r=await apiFetch('notifications');if(r&&Array.isArray(r.items))setData(r);}catch(e){}},[]);
-  useEffect(()=>{refresh();const t=setInterval(refresh,25000);const h=()=>refresh();window.addEventListener('notes-seen',h);return()=>{clearInterval(t);window.removeEventListener('notes-seen',h);};},[refresh]);
+  useEffect(()=>{refresh();const t=setInterval(refresh,60000);const h=()=>refresh();window.addEventListener('notes-seen',h);return()=>{clearInterval(t);window.removeEventListener('notes-seen',h);};},[refresh]);
+  useLive(['notifs','events'],()=>{refresh();});
   const has=data.count>0;
   const ago=t=>{const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' hr ago':Math.round(m/1440)+' d ago';};
   const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',reassigned:'🔁',docs_uploaded:'📎',docs_complete:'✅',note:'📝'};
@@ -593,6 +629,7 @@ function LogTab({dealNumber}){
   const[rows,setRows]=useState(null),[lerr,setLerr]=useState('');
   const load=useCallback(()=>{apiFetch('deals?action=events&deal_number='+encodeURIComponent(dealNumber)).then(r=>{setRows(r);setLerr('');}).catch(e=>setLerr(e.message));},[dealNumber]);
   useEffect(()=>{load();},[load]);
+  useLive(['events'],()=>{load();});
   const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note'],doc_accepted:['✅','accepted a document'],doc_rejected:['⛔','rejected a document'],docs_zip:['📦','downloaded all documents as a ZIP'],payout_recorded:['💵','recorded the payout'],payout_edited:['✏️','edited the payout'],check_paid:['✅','marked the check paid'],check_unpaid:['↩️','marked the check unpaid']};
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
   const roleChip={admin:['Staff','#DBEAFE','#1E40AF'],broker:['Broker','#D1FAE5','#065F46'],system:['System','#F3F4F6','#374151']};
@@ -685,6 +722,7 @@ function BrokerModal({broker,onClose,onResetPW}){
   const[saving,setSaving]=useState(false),[toast,setToast]=useState(null);
   function t2(msg,type="success"){setToast({msg,type});setTimeout(()=>setToast(null),3000);}
   useEffect(()=>{apiFetch(`deals?broker_id=${broker.id}`).then(d=>{setDeals(d);setL(false);}).catch(()=>setL(false));},[broker.id]);
+  useLive(['deals','events'],()=>{apiFetch(`deals?broker_id=${broker.id}`).then(d=>{setDeals(d);setSelDeal(q=>q?(d.find(x=>x.deal_number===q.deal_number)||q):q);}).catch(()=>{});});
   const filtered=sf==="All"?deals:deals.filter(d=>d.status===sf);
   const req=deals.length,sold=deals.filter(d=>d.status==="Completed").length,cr=req?Math.round(sold/req*100):0;
   async function saveEdit(){setSaving(true);try{await apiFetch("brokers",{method:"PUT",body:{broker_code:broker.broker_code,...form}});t2("Broker updated!");}catch(e){t2(e.message,"error");}finally{setSaving(false);setEditing(false);}}
@@ -730,9 +768,12 @@ function BrokerPortal({broker,onLogout}){
   const[pw,setPW]=useState({current_password:"",new_password:"",confirm_password:""});
   const[filterMake,setFM]=useState(""),[filterTrim,setFT]=useState(""),[sortMSRP,setSM]=useState(""),[colorFilters,setCF]=useState(new Set());
   function t2(msg,type="success"){setToast({msg,type});setTimeout(()=>setToast(null),3500);}
-  const loadInv=useCallback(async()=>{try{setInv(await apiFetch("inventory"));}catch(e){t2(e.message,"error");}},[]);
-  const loadDeals=useCallback(async()=>{try{setDeals(await apiFetch(canManage&&ownerView!=="all"?"deals?owner="+ownerView:"deals"));}catch(e){t2(e.message,"error");}},[ownerView,canManage]);
+  const loadInv=useCallback(async(quiet)=>{try{setInv(await apiFetch("inventory"));}catch(e){if(quiet!==true)t2(e.message,"error");}},[]);
+  const loadDeals=useCallback(async(quiet)=>{try{setDeals(await apiFetch(canManage&&ownerView!=="all"?"deals?owner="+ownerView:"deals"));}catch(e){if(quiet!==true)t2(e.message,"error");}},[ownerView,canManage]);
   useEffect(()=>{refreshTeam();},[canManage]);
+  useLive(['deals','events','msgs'],()=>{loadDeals(true);});
+  useLive(['inv','deals'],()=>{loadInv(true);});
+  useLive(['team'],()=>{refreshTeam();});
   useEffect(()=>{loadInv();},[loadInv]);
   useEffect(()=>{if(tab==="mydeals")loadDeals();},[tab,loadDeals]);
   const filteredDeals=useMemo(()=>statusTab==="All"?deals:deals.filter(d=>d.status===statusTab),[deals,statusTab]);
@@ -818,11 +859,14 @@ function AdminPortal({user,onLogout}){
   const[pf,setPF]=useState({name:user.name||"",email:user.email||"",current_password:"",new_password:"",confirm_password:""});
   const[rpw,setRPW]=useState({broker_code:"",new_password:""});
   function t2(msg,type="success"){setToast({msg,type});setTimeout(()=>setToast(null),3500);}
-  const loadDeals=useCallback(async()=>{try{const p=new URLSearchParams();if(sf!=="All")p.set("status",sf);if(bf!=="All")p.set("broker_id",bf);if(gs)p.set("search",gs);{if(viewMode!=='all')p.set('assigned',viewMode);setDeals(await apiFetch(`deals?${p}`));}}catch(e){t2(e.message,"error");}},[sf,bf,gs,viewMode,user.id]);
-  const loadInv=useCallback(async()=>{try{setInv(await apiFetch("inventory"));}catch(e){t2(e.message,"error");}},[]);
-  const loadBrokers=useCallback(async()=>{try{setBrokers(await apiFetch("brokers"));}catch(e){t2(e.message,"error");}},[]);
+  const loadDeals=useCallback(async(quiet)=>{try{const p=new URLSearchParams();if(sf!=="All")p.set("status",sf);if(bf!=="All")p.set("broker_id",bf);if(gs)p.set("search",gs);if(viewMode!=='all')p.set('assigned',viewMode);const list=await apiFetch(`deals?${p}`);setDeals(list);setSelDeal(q=>q?(list.find(d=>d.deal_number===q.deal_number)||q):q);}catch(e){if(quiet!==true)t2(e.message,"error");}},[sf,bf,gs,viewMode,user.id]);
+  const loadInv=useCallback(async(quiet)=>{try{setInv(await apiFetch("inventory"));}catch(e){if(quiet!==true)t2(e.message,"error");}},[]);
+  const loadBrokers=useCallback(async(quiet)=>{try{setBrokers(await apiFetch("brokers"));}catch(e){if(quiet!==true)t2(e.message,"error");}},[]);
   const loadAdmins=useCallback(async()=>{try{setAdmins(await apiFetch("admins"));}catch(e){t2(e.message,"error");}},[]);
   useEffect(()=>{loadDeals();},[loadDeals]);
+  useLive(['deals','events','msgs'],()=>{loadDeals(true);});
+  useLive(['deals','events'],()=>{if(tab==="brokers"||tab==="dashboard")loadBrokers(true);});
+  useLive(['inv','deals'],()=>{if(tab==="inventory")loadInv(true);});
   useEffect(()=>{if(tab==="inventory")loadInv();},[tab,loadInv]);
   useEffect(()=>{if(tab==="brokers"||tab==="dashboard")loadBrokers();},[tab,loadBrokers]);
   useEffect(()=>{if(tab==="settings")loadAdmins();},[tab,loadAdmins]);
@@ -918,6 +962,6 @@ export default function App(){
   function logout(){const t=localStorage.getItem("auth_token");if(t)apiFetch("auth?action=logout",{method:"POST"}).catch(()=>{});localStorage.clear();setAuth(null);}
   if(rt)return <ResetPage token={rt} onDone={()=>{setRT(null);window.history.replaceState({},"","/");}}/>;
   if(!auth)return <LoginPage onLogin={login}/>;
-  if(auth.role==="broker")return <><BrokerPortal broker={auth.broker} onLogout={logout}/><ChatWidget/></>;
-  return <><AdminPortal user={auth} onLogout={logout}/><ChatWidget/></>;
+  if(auth.role==="broker")return <><BrokerPortal broker={auth.broker} onLogout={logout}/><ChatWidget/><LivePulse/></>;
+  return <><AdminPortal user={auth} onLogout={logout}/><ChatWidget/><LivePulse/></>;
 }

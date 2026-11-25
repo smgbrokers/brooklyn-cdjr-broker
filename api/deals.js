@@ -4,6 +4,7 @@ import { notifyStaff } from './_notify.js'
 import { logEvent } from './_audit.js'
 import { brokerCanSee, brokerRecipients, filterBrokerDeals } from './_team.js'
 import { computePayout, buildStats } from './_payout.js'
+import { buildPulse } from './_pulse.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -85,6 +86,14 @@ export default async function handler(req, res) {
       if (error) return err(res, error.message, 500)
       return ok(res, await withDocSummary(filterBrokerDeals(session, data, req.query.owner)))
     }
+  }
+
+  // A tiny fingerprint of what has changed for this person; the screens poll it so they stay live
+  if (req.method === 'GET' && action === 'pulse') {
+    const session = await requireAny(req, res)
+    if (!session) return
+    res.setHeader('Cache-Control', 'no-store')
+    return ok(res, { sig: await buildPulse(session) })
   }
 
   // GET the audit trail for a deal (staff only)
