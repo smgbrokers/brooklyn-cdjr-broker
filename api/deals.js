@@ -5,6 +5,7 @@ import { logEvent } from './_audit.js'
 import { brokerCanSee, brokerRecipients, filterBrokerDeals } from './_team.js'
 import { computePayout, buildStats } from './_payout.js'
 import { buildPulse } from './_pulse.js'
+import { addCarToBoard } from './_porter.js'
 
 async function getBrokerMap() {
   const { data } = await supabase.from('brokers').select('id, company_name, broker_code, contact_name, email')
@@ -365,11 +366,17 @@ export default async function handler(req, res) {
     if (payoutFields) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'payout_recorded', detail: 'Bird dog $' + payoutFields.bird_dog_total.toFixed(2) + ', short COD $' + payoutFields.short_cod.toFixed(2) + ', check $' + payoutFields.check_amount.toFixed(2) })
     if (status && status !== deal.status) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: 'status_changed', detail: deal.status + ' \u2192 ' + status })
     if (vehicle_available !== undefined && !!vehicle_available !== !!deal.vehicle_available) await logEvent({ dealId: deal.id, role: 'admin', userId: session.user_id, action: vehicle_available ? 'vehicle_confirmed' : 'vehicle_unconfirmed', detail: deal.vehicle_desc || null })
+    // Approved: optionally put the car on the Get Ready board (with or without a state inspection)
+    let car = null
+    if (status === 'Approved' && deal.status !== 'Approved' && body.get_ready === true) {
+      const { data: me } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+      car = await addCarToBoard(deal, { inspection: body.needs_inspection === true, by: me ? me.name : 'Staff' })
+    }
     if (marking_available) {
       const { data: broker } = await supabase.from('brokers').select('*').eq('id', deal.broker_id).single()
       if (broker?.email) await notifyBrokerVehicleAvailable(deal, { ...broker, email: await brokerRecipients(broker, deal) })
     }
-    return ok(res, { ok: true, deal: updates })
+    return ok(res, { ok: true, deal: updates, car })
   }
 
   // Staff: correct the payout amounts of a completed deal, or mark its check paid or unpaid

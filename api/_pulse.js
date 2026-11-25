@@ -18,14 +18,15 @@ export async function buildPulse(session) {
   }
 
   if (session.role === 'admin') {
-    const [deals, events, msgs, notifs, inv] = await Promise.all([
+    const [deals, events, msgs, notifs, inv, cars] = await Promise.all([
       countOf('deals'),
       maxId('deal_events'),
       maxId('deal_messages'),
       maxId('staff_notifications', q => q.eq('admin_id', session.user_id)),
       countOf('inventory'),
+      maxId('porter_log'),
     ])
-    return { deals, events, msgs, notifs, inv }
+    return { deals, events, msgs, notifs, inv, cars }
   }
 
   // Brokers: only the deals this login is allowed to see

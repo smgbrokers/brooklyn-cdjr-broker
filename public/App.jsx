@@ -580,6 +580,176 @@ function startLivePulse(fetchSig,opts={}){
 function LivePulse(){useEffect(()=>startLivePulse(async()=>{const r=await apiFetch('deals?action=pulse');return r&&r.sig;}),[]);return null;}
 const liveMatches=(keys,changed)=>!keys||keys.some(k=>changed.includes(k));
 function useLive(keys,fn){const ref=useRef(fn);ref.current=fn;useEffect(()=>{const h=e=>{const ch=(e.detail&&e.detail.changed)||[];if(liveMatches(keys,ch))ref.current(ch);};window.addEventListener('live-update',h);return()=>window.removeEventListener('live-update',h);},[]);}
+const carLast=n=>{const p=String(n||'').trim().split(' ').filter(Boolean);if(!p.length)return '';const l=p[p.length-1];const b=l.split('.').join('').toLowerCase();return p.length>1&&['jr','sr','ii','iii','iv'].includes(b)?p[p.length-2]:l;};
+const carTitle=({vin,model,last,broker,inspection})=>[vin,model,last,broker,inspection?'INSPECTION NEEDED':'NO INSPECTION'].filter(Boolean).join(' - ');
+const carAgo=t=>{if(!t)return '';const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+'m':m<1440?Math.round(m/60)+'h':Math.round(m/1440)+'d';};
+const carIcon={created:'\ud83c\udd95',moved:'\u27a1\ufe0f',removed:'\ud83d\uddd1\ufe0f'};
+function CarCardView({card,color,onOpen,drag}){
+  return <div draggable={!!drag} onDragStart={drag?e=>{e.dataTransfer.setData('text/plain',String(card.id));e.dataTransfer.effectAllowed='move';drag(card.id);}:undefined} onClick={()=>onOpen(card)} style={{background:'#fff',borderRadius:8,padding:'10px 12px',marginBottom:8,boxShadow:'0 1px 3px rgba(9,30,66,0.25)',cursor:'pointer',borderLeft:'4px solid '+color}}>
+    <div style={{fontSize:13,fontWeight:600,color:'#172B4D',lineHeight:1.4,wordBreak:'break-word'}}>{card.title}</div>
+    <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:8}}>
+      <span style={{fontSize:10,fontWeight:700,borderRadius:4,padding:'2px 6px',background:card.inspection?'#FFF0B3':'#EBECF0',color:card.inspection?'#7A5200':'#5E6C84'}}>{card.inspection?'INSPECTION':'NO INSPECTION'}</span>
+      {card.deal_number&&<span style={{fontSize:11,color:'#5E6C84',fontWeight:600}}>#{card.deal_number}</span>}
+      <span style={{marginLeft:'auto',fontSize:11,color:'#5E6C84'}}>{card.notes_count>0&&<span>{'\ud83d\udcac '}{card.notes_count}{'  '}</span>}{carAgo(card.moved_at)}</span>
+    </div>
+  </div>;
+}
+function CarBoardView({columns,cards,onOpen,onDropCard,canDrag,loading,error}){
+  const[over,setOver]=useState(''),dragId=useRef(null);
+  return <div>
+    {error&&<div style={{background:'#FEE2E2',color:'#991B1B',borderRadius:8,padding:'10px 14px',fontSize:13,fontWeight:600,marginBottom:12}}>{error}</div>}
+    {columns.length===0&&!error&&<div style={{padding:'28px 8px',textAlign:'center',color:'#94A3B8',fontSize:14}}>{loading?'Loading the board...':'Nothing to show yet.'}</div>}
+    <div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:14,alignItems:'flex-start'}}>
+      {columns.map(col=>{const list=cards.filter(c=>c.column_key===col.key);return <div key={col.key} onDragOver={canDrag?e=>{e.preventDefault();setOver(col.key);}:undefined} onDragLeave={canDrag?()=>setOver(''):undefined} onDrop={canDrag?e=>{e.preventDefault();setOver('');const id=Number(e.dataTransfer.getData('text/plain'))||dragId.current;if(id)onDropCard(id,col.key);dragId.current=null;}:undefined} style={{flex:'0 0 272px',background:over===col.key?'#DEEBFF':'#EBECF0',borderRadius:10,padding:10,minHeight:150,border:'2px solid '+(over===col.key?'#4C9AFF':'transparent')}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,margin:'2px 4px 10px'}}><span style={{fontSize:12,fontWeight:700,color:'#5E6C84',textTransform:'uppercase'}}>{col.label}</span><span style={{fontSize:12,color:'#5E6C84'}}>{list.length}</span></div>
+        {list.map(c=><CarCardView key={c.id} card={c} color={col.color} onOpen={onOpen} drag={canDrag?id=>{dragId.current=id;}:null}/>)}
+        {list.length===0&&<div style={{textAlign:'center',padding:'18px 6px',fontSize:12,color:'#97A0AF'}}>{loading?'Loading...':'No cars here'}</div>}
+      </div>;})}
+    </div>
+  </div>;
+}
+function CarActivity({log,note,setNote,onSend,busy,err}){
+  const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  return <div>
+    <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:8}}>Activity and notes</div>
+    <div style={{maxHeight:260,overflowY:'auto',marginBottom:10}}>
+      {log.length===0&&<div style={{fontSize:13,color:'#9CA3AF',padding:'6px 0'}}>No activity yet.</div>}
+      {log.map(l=>l.action==='note'?<div key={l.id} style={{background:l.actor_role==='porter'?'#FEF3C7':'#EFF6FF',borderRadius:10,padding:'8px 12px',marginBottom:8}}><div style={{fontSize:11,color:'#6B7280',marginBottom:2}}><b>{l.actor_name}</b>{l.actor_role==='porter'?' (porter)':' (office)'}{' \u00b7 '}{fmt(l.created_at)}</div><div style={{fontSize:14,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{l.detail}</div></div>:<div key={l.id} style={{fontSize:12,color:'#6B7280',margin:'6px 0'}}>{carIcon[l.action]||''} {l.detail}{' \u00b7 '}{l.actor_name}{' \u00b7 '}{fmt(l.created_at)}</div>)}
+    </div>
+    <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} maxLength={1000} placeholder='Add a note...' style={{width:'100%',boxSizing:'border-box',padding:'10px 12px',borderRadius:8,border:'1.5px solid #D1D5DB',fontSize:14,fontFamily:'inherit',resize:'vertical',marginBottom:8}}/>
+    {err&&<div style={{color:'#DC2626',fontSize:13,marginBottom:8}}>{err}</div>}
+    <Btn size='sm' onClick={onSend} loading={busy} disabled={!note.trim()}>Add note</Btn>
+  </div>;
+}
+function CarModalView({card,log,columns,staff,onClose,onMove,note,setNote,onSend,busy,err,onOpenDeal,onRemove}){
+  const col=columns.find(c=>c.key===card.column_key)||{label:card.column_key,color:'#6B7280'};
+  const chip=(t,bg,fg)=><span style={{fontSize:11,fontWeight:700,background:bg,color:fg,borderRadius:10,padding:'3px 10px'}}>{t}</span>;
+  return <Modal title='Car details' onClose={onClose}>
+    <div style={{fontSize:16,fontWeight:800,color:'#172B4D',lineHeight:1.4,marginBottom:10,wordBreak:'break-word'}}>{card.title}</div>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>{chip(col.label,col.color,'#fff')}{card.inspection?chip('INSPECTION NEEDED','#FEF3C7','#92400E'):chip('NO INSPECTION','#F3F4F6','#374151')}{card.deal_number&&chip('Deal #'+card.deal_number,'#EFF6FF','#1D4ED8')}</div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>{[['VIN',card.vin],['Model',card.model],['Customer',card.customer_last],['Broker',card.broker_name]].map(([l,v])=><div key={l} style={{background:'#F8FAFC',borderRadius:8,padding:'8px 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase'}}>{l}</div><div style={{fontSize:13,fontWeight:600,wordBreak:'break-word'}}>{v||'-'}</div></div>)}</div>
+    <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:6}}>Move to</div>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>{columns.map(c=><button key={c.key} onClick={()=>onMove(c.key)} disabled={c.key===card.column_key} style={{padding:'7px 12px',borderRadius:8,border:'2px solid '+c.color,background:c.key===card.column_key?c.color:'#fff',color:c.key===card.column_key?'#fff':c.color,fontWeight:700,fontSize:12,cursor:c.key===card.column_key?'default':'pointer'}}>{c.label}</button>)}</div>
+    <CarActivity log={log} note={note} setNote={setNote} onSend={onSend} busy={busy} err={err}/>
+    {staff&&<div style={{display:'flex',gap:10,flexWrap:'wrap',marginTop:14,borderTop:'1px solid #E5E7EB',paddingTop:12}}>{card.deal_number&&onOpenDeal&&<Btn size='sm' variant='outline' onClick={()=>onOpenDeal(card.deal_number)}>Open deal #{card.deal_number}</Btn>}{onRemove&&<Btn size='sm' variant='danger' onClick={onRemove}>Remove from board</Btn>}</div>}
+  </Modal>;
+}
+function CarBoard({staff,onOpenDeal,onAuthLost}){
+  const[data,setData]=useState({columns:[],cards:[]}),[loading,setLoading]=useState(true),[berr,setBerr]=useState(''),[open,setOpen]=useState(null),[detail,setDetail]=useState(null),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[derr,setDerr]=useState('');
+  const load=useCallback(async(quiet)=>{try{const r=await apiFetch('porter?action=board');setData(r);setBerr('');}catch(e){if(/expired|disabled|unauthorized/i.test(e.message)&&onAuthLost){onAuthLost();return;}if(quiet!==true)setBerr(e.message);}finally{setLoading(false);}},[]);
+  const loadDetail=useCallback(async(id)=>{try{setDetail(await apiFetch('porter?action=card&id='+id));}catch(e){}},[]);
+  useEffect(()=>{load();},[load]);
+  useLive(['cards','cars','n'],()=>{load(true);if(open)loadDetail(open.id);});
+  function openCard(c){setOpen(c);setDetail(null);setNote('');setDerr('');loadDetail(c.id);}
+  async function moveCard(id,to){const was=data.cards.find(c=>c.id===id);if(!was||was.column_key===to)return;setData(d=>({...d,cards:d.cards.map(c=>c.id===id?{...c,column_key:to,moved_at:new Date().toISOString()}:c)}));try{await apiFetch('porter?action=move',{method:'POST',body:{id,to}});if(open&&open.id===id)loadDetail(id);}catch(e){setBerr(e.message);load(true);}}
+  async function sendNote(){setBusy(true);setDerr('');try{await apiFetch('porter?action=note',{method:'POST',body:{id:open.id,body:note}});setNote('');await loadDetail(open.id);load(true);}catch(e){setDerr(e.message);}finally{setBusy(false);}}
+  async function removeCard(){try{await apiFetch('porter?action=card_archive',{method:'POST',body:{id:open.id}});setOpen(null);load(true);}catch(e){setDerr(e.message);}}
+  const shown=open?(data.cards.find(c=>c.id===open.id)||open):null;
+  return <div>
+    <CarBoardView columns={data.columns} cards={data.cards} onOpen={openCard} onDropCard={moveCard} canDrag loading={loading} error={berr}/>
+    {shown&&<CarModalView card={shown} log={detail?detail.log:[]} columns={data.columns} staff={!!staff} onClose={()=>setOpen(null)} onMove={to=>moveCard(shown.id,to)} note={note} setNote={setNote} onSend={sendNote} busy={busy} err={derr} onOpenDeal={onOpenDeal} onRemove={staff?removeCard:null}/>}
+  </div>;
+}
+function PorterPortal({porter,onLogout}){
+  useEffect(()=>startLivePulse(async()=>{const r=await apiFetch('porter?action=pulse');return r&&r.sig;}),[]);
+  return <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)'}}>
+    <div style={{padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}><div><div style={{color:'#fff',fontWeight:800,fontSize:18}}>BROOKLYN CDJR</div><div style={{color:'#93C5FD',fontSize:12,letterSpacing:'0.05em'}}>GET READY BOARD</div></div><div style={{display:'flex',alignItems:'center',gap:12}}><div style={{color:'#fff',fontSize:14,fontWeight:600}}>{porter&&porter.name}</div><Btn variant='outline' size='sm' onClick={onLogout} style={{borderColor:'#334155',color:'#94A3B8'}}>Sign Out</Btn></div></div>
+    <div style={{padding:'6px 16px 24px'}}><CarBoard staff={false} onAuthLost={onLogout}/></div>
+  </div>;
+}
+function PortersAdmin(){
+  const blank={name:'',username:'',password:''};
+  const[list,setList]=useState(null),[perr,setPerr]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(''),[adding,setAdding]=useState(false),[form,setForm]=useState(blank),[ferr,setFerr]=useState(''),[reset,setReset]=useState(null),[pw,setPw]=useState(''),[rm,setRm]=useState(null);
+  const load=useCallback(async()=>{try{const r=await apiFetch('porter?action=porters');setList(r.porters);setPerr('');}catch(e){setPerr(e.message);}},[]);
+  useEffect(()=>{load();},[load]);
+  async function run(tag,action,payload){setBusy(tag);setFerr('');setNote('');try{await apiFetch('porter?action='+action,{method:'POST',body:payload});await load();return true;}catch(e){setFerr(e.message);return false;}finally{setBusy('');}}
+  async function addPorter(){const okd=await run('add','porter_add',form);if(okd){setAdding(false);setForm(blank);setNote('Porter added. Give them their username and password.');}}
+  async function toggle(p){const okd=await run('t-'+p.id,'porter_update',{id:p.id,active:!p.active});if(okd)setNote(p.active?p.name+' is disabled and was signed out.':p.name+' can sign in again.');}
+  async function doReset(){const okd=await run('pw','porter_update',{id:reset.id,new_password:pw});if(okd){setNote('New password set for '+reset.name+'. They were signed out.');setReset(null);setPw('');}}
+  async function doRemove(){const okd=await run('rm','porter_remove',{id:rm.id});if(okd){setNote(rm.name+' was removed.');setRm(null);}}
+  const chip=(t,bg,fg)=><span style={{fontSize:11,fontWeight:700,background:bg,color:fg,borderRadius:10,padding:'2px 9px'}}>{t}</span>;
+  const fmtDay=t=>t?new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'never';
+  const row={background:'#fff',borderRadius:12,padding:'14px 16px',marginBottom:10,boxShadow:'0 1px 6px rgba(0,0,0,0.07)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'};
+  if(!list)return <div style={{padding:24,color:perr?'#DC2626':'#9CA3AF',fontSize:14}}>{perr||'Loading porters...'}</div>;
+  return <div>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12,marginBottom:6}}><h3 style={{margin:0,fontSize:18,fontWeight:700}}>Porters</h3><Btn onClick={()=>{setAdding(true);setFerr('');setNote('');}}>+ Add porter</Btn></div>
+    <div style={{fontSize:13,color:'#6B7280',marginBottom:16,lineHeight:1.5}}>Porters sign in on the same page as everyone else, using the <b>Porter Login</b> tab. They only see the Get Ready board: cars, notes and where each one is. They never see customers, credit applications or money. <b>Disable</b> a porter to block their sign in without deleting them.</div>
+    {note&&<div style={{background:'#D1FAE5',color:'#065F46',borderRadius:8,padding:'10px 14px',fontSize:13,fontWeight:600,marginBottom:12}}>{note}</div>}
+    {(perr||(ferr&&!adding&&!reset&&!rm))&&<div style={{background:'#FEE2E2',color:'#991B1B',borderRadius:8,padding:'10px 14px',fontSize:13,fontWeight:600,marginBottom:12}}>{perr||ferr}</div>}
+    {list.length===0&&<div style={{background:'#F8FAFC',border:'1.5px dashed #CBD5E1',borderRadius:12,padding:24,textAlign:'center',color:'#64748B',fontSize:14}}>No porters yet. Click <b>+ Add porter</b> to create the first login.</div>}
+    {list.map(p=><div key={p.id} style={{...row,opacity:p.active?1:0.8,borderLeft:'4px solid '+(p.active?'#10B981':'#9CA3AF')}}>
+      <div><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontWeight:700,fontSize:15}}>{p.name}</span>{p.active?chip('Active','#D1FAE5','#065F46'):chip('Disabled','#F3F4F6','#4B5563')}</div><div style={{fontSize:12,color:'#6B7280',marginTop:3}}>{p.username}{' \u00b7 last sign in '}{fmtDay(p.last_login_at)}</div></div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn size='sm' variant={p.active?'outline':'success'} onClick={()=>toggle(p)} loading={busy==='t-'+p.id}>{p.active?'Disable':'Enable'}</Btn><Btn size='sm' variant='outline' onClick={()=>{setReset(p);setPw('');setFerr('');}}>Reset password</Btn><Btn size='sm' variant='danger' onClick={()=>{setRm(p);setFerr('');}}>Remove</Btn></div>
+    </div>)}
+    {adding&&<Modal title='Add porter' onClose={()=>setAdding(false)}>
+      <div style={{display:'flex',gap:16,flexWrap:'wrap'}}><Inp half label='Full name *' value={form.name} onChange={v=>setForm(p=>({...p,name:v}))}/><Inp half label='Username *' value={form.username} onChange={v=>setForm(p=>({...p,username:v}))} placeholder='mike'/><Inp half label='Password * (8 or more characters)' value={form.password} onChange={v=>setForm(p=>({...p,password:v}))} type='password'/></div>
+      {ferr&&<div style={{color:'#DC2626',fontSize:13,margin:'8px 0'}}>{ferr}</div>}
+      <div style={{display:'flex',justifyContent:'flex-end',marginTop:8}}><Btn onClick={addPorter} loading={busy==='add'} disabled={!form.name.trim()||!form.username.trim()||form.password.length<8}>Add porter</Btn></div>
+    </Modal>}
+    {reset&&<Modal title={'Reset password for '+reset.name} onClose={()=>setReset(null)}>
+      <Inp label='New password (8 or more characters)' value={pw} onChange={setPw} type='password'/>
+      <div style={{fontSize:12,color:'#6B7280',margin:'0 0 12px'}}>They will be signed out and need the new password to sign in again.</div>
+      {ferr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{ferr}</div>}
+      <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}><Btn variant='outline' onClick={()=>setReset(null)}>Cancel</Btn><Btn onClick={doReset} loading={busy==='pw'} disabled={pw.length<8}>Set password</Btn></div>
+    </Modal>}
+    {rm&&<Modal title={'Remove '+rm.name+'?'} onClose={()=>setRm(null)}>
+      <div style={{fontSize:14,lineHeight:1.6,marginBottom:14}}>{rm.name} will be signed out and can no longer sign in. Notes they wrote stay on the cars. To pause them instead, use <b>Disable</b>.</div>
+      {ferr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{ferr}</div>}
+      <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}><Btn variant='outline' onClick={()=>setRm(null)}>Cancel</Btn><Btn variant='danger' onClick={doRemove} loading={busy==='rm'}>Remove {rm.name}</Btn></div>
+    </Modal>}
+  </div>;
+}
+function GetReadyAdmin({onOpenDeal}){
+  const[sub,setSub]=useState('board');
+  const pill=(k,l)=><button onClick={()=>setSub(k)} style={{padding:'8px 18px',borderRadius:20,border:'2px solid '+(sub===k?'#1D4ED8':'#E5E7EB'),background:sub===k?'#1D4ED8':'#fff',color:sub===k?'#fff':'#374151',fontWeight:700,fontSize:13,cursor:'pointer'}}>{l}</button>;
+  return <div><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12,marginBottom:16}}><h2 style={{margin:0,fontSize:22,fontWeight:800}}>Get Ready</h2><div style={{display:'flex',gap:8}}>{pill('board','Board')}{pill('porters','Porters')}</div></div>{sub==='board'?<CarBoard staff onOpenDeal={onOpenDeal}/>:<PortersAdmin/>}</div>;
+}
+function CarStatusTab({deal}){
+  const[d,setD]=useState(null),[cerr,setCerr]=useState(''),[insp,setInsp]=useState(false),[busy,setBusy]=useState(false),[note,setNote]=useState(''),[nbusy,setNbusy]=useState(false),[nerr,setNerr]=useState('');
+  const load=useCallback(async()=>{try{setD(await apiFetch('porter?action=deal_card&deal_number='+encodeURIComponent(deal.deal_number)));setCerr('');}catch(e){setCerr(e.message);}},[deal.deal_number]);
+  useEffect(()=>{load();},[load]);
+  useLive(['cars','events'],()=>{load();});
+  async function add(){setBusy(true);setCerr('');try{await apiFetch('porter?action=card_add',{method:'POST',body:{deal_number:deal.deal_number,inspection:insp}});await load();}catch(e){setCerr(e.message);}finally{setBusy(false);}}
+  async function move(to){try{await apiFetch('porter?action=move',{method:'POST',body:{id:d.card.id,to}});await load();}catch(e){setCerr(e.message);}}
+  async function send(){setNbusy(true);setNerr('');try{await apiFetch('porter?action=note',{method:'POST',body:{id:d.card.id,body:note}});setNote('');await load();}catch(e){setNerr(e.message);}finally{setNbusy(false);}}
+  async function remove(){try{await apiFetch('porter?action=card_archive',{method:'POST',body:{id:d.card.id}});await load();}catch(e){setCerr(e.message);}}
+  const box={background:'#fff',border:'1.5px solid #E5E7EB',borderRadius:12,padding:16,marginBottom:14};
+  if(!d)return <div style={{padding:24,color:cerr?'#DC2626':'#9CA3AF',fontSize:14}}>{cerr||'Loading car status...'}</div>;
+  const cols=d.columns||[],c=d.card;
+  if(!c)return <div style={box}>
+    <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>This car is not on the Get Ready board</div>
+    <div style={{fontSize:13,color:'#6B7280',marginBottom:12,lineHeight:1.5}}>Add it so the porters can get it ready. It appears in the first column.</div>
+    <label style={{display:'flex',alignItems:'center',gap:8,fontSize:14,fontWeight:600,marginBottom:10,cursor:'pointer'}}><input type='checkbox' checked={insp} onChange={e=>setInsp(e.target.checked)}/>Needs state inspection</label>
+    <div style={{background:'#F8FAFC',borderRadius:8,padding:'8px 12px',fontSize:12,color:'#475569',marginBottom:12,wordBreak:'break-word'}}>{carTitle({vin:deal.vin,model:deal.vehicle_desc,last:carLast(deal.customer_name),broker:deal.broker_name,inspection:insp})}</div>
+    {cerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{cerr}</div>}
+    <Btn onClick={add} loading={busy}>Add to Get Ready</Btn>
+  </div>;
+  const idx=cols.findIndex(x=>x.key===c.column_key),cur=cols[idx]||{label:c.column_key,color:'#6B7280'};
+  return <div>
+    <div style={box}>
+      <div style={{fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',marginBottom:6}}>Where the car is now</div>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:10}}><span style={{fontSize:16,fontWeight:800,background:cur.color,color:'#fff',borderRadius:10,padding:'4px 14px'}}>{cur.label}</span><span style={{fontSize:12,color:'#6B7280'}}>{c.moved_by?'moved by '+c.moved_by+' \u00b7 ':''}{carAgo(c.moved_at)}{' in this column'}</span></div>
+      <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:12}}>{cols.map((x,i)=><div key={x.key} style={{flex:'1 1 90px',minWidth:80,textAlign:'center'}}><div style={{height:6,borderRadius:3,background:i<=idx?x.color:'#E5E7EB'}}/><div style={{fontSize:10,marginTop:4,fontWeight:i===idx?800:500,color:i===idx?'#111827':'#9CA3AF'}}>{x.label}</div></div>)}</div>
+      <div style={{fontSize:12,color:'#475569',wordBreak:'break-word'}}>{c.title}</div>
+    </div>
+    <div style={box}>
+      <div style={{fontSize:12,fontWeight:700,color:'#6B7280',textTransform:'uppercase',marginBottom:6}}>Move to</div>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cols.map(x=><button key={x.key} onClick={()=>move(x.key)} disabled={x.key===c.column_key} style={{padding:'7px 12px',borderRadius:8,border:'2px solid '+x.color,background:x.key===c.column_key?x.color:'#fff',color:x.key===c.column_key?'#fff':x.color,fontWeight:700,fontSize:12,cursor:x.key===c.column_key?'default':'pointer'}}>{x.label}</button>)}</div>
+    </div>
+    <div style={box}><CarActivity log={d.log||[]} note={note} setNote={setNote} onSend={send} busy={nbusy} err={nerr}/></div>
+    {cerr&&<div style={{color:'#DC2626',fontSize:13,marginBottom:10}}>{cerr}</div>}
+    <button onClick={remove} style={{background:'none',border:'none',color:'#6B7280',fontSize:12,textDecoration:'underline',cursor:'pointer',padding:0}}>Remove this car from the board</button>
+  </div>;
+}
+function GetReadyPrompt({deal,inspection,setInspection,onClose,onChoose}){
+  return <Modal title='Add this car to Get Ready?' onClose={onClose}>
+    <div style={{fontSize:14,color:'#374151',lineHeight:1.6,marginBottom:12}}>Putting the car on the Get Ready board lets the porters prepare it for delivery. It starts in the <b>New Request / RSU Check</b> column.</div>
+    <label style={{display:'flex',alignItems:'center',gap:10,fontSize:15,fontWeight:700,marginBottom:12,cursor:'pointer',background:'#FFFBEB',border:'1.5px solid #FCD34D',borderRadius:10,padding:'10px 14px'}}><input type='checkbox' checked={inspection} onChange={e=>setInspection(e.target.checked)} style={{width:18,height:18}}/>Needs state inspection</label>
+    <div style={{fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',marginBottom:4}}>The card will read</div>
+    <div style={{background:'#F8FAFC',border:'1px solid #E5E7EB',borderRadius:8,padding:'10px 12px',fontSize:13,fontWeight:600,color:'#172B4D',marginBottom:16,wordBreak:'break-word'}}>{carTitle({vin:deal.vin,model:deal.vehicle_desc,last:carLast(deal.customer_name),broker:deal.broker_name,inspection})}</div>
+    <div style={{display:'flex',gap:10,flexWrap:'wrap',justifyContent:'flex-end'}}><Btn variant='ghost' onClick={onClose}>Cancel</Btn><Btn variant='outline' onClick={()=>onChoose(false)}>No, just approve</Btn><Btn variant='success' onClick={()=>onChoose(true)}>Yes, add to Get Ready</Btn></div>
+  </Modal>;
+}
 function NotesPanel({dealNumber,isStaff}){
   const[notes,setNotes]=useState(null),[text,setText]=useState(''),[busy,setBusy]=useState(false),[nerr,setNerr]=useState('');
   const load=useCallback(async()=>{try{setNotes(await apiFetch('notes?deal_number='+encodeURIComponent(dealNumber)));setNerr('');if(isStaff){apiFetch('notes?action=seen',{method:'POST',body:{deal_number:dealNumber}}).then(()=>window.dispatchEvent(new Event('notes-seen'))).catch(()=>{});}}catch(e){setNerr(e.message);}},[dealNumber,isStaff]);
@@ -603,7 +773,7 @@ function NotificationsBell({onOpenDeal}){
   useLive(['notifs','events'],()=>{refresh();});
   const has=data.count>0;
   const ago=t=>{const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' hr ago':Math.round(m/1440)+' d ago';};
-  const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',reassigned:'🔁',docs_uploaded:'📎',docs_complete:'✅',note:'📝'};
+  const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',reassigned:'🔁',docs_uploaded:'📎',docs_complete:'✅',note:'📝',porter_note:'🧰'};
   function openItem(it){setOpen(false);if(it.kind==='event'&&it.unread){apiFetch('notifications?action=read',{method:'POST',body:{id:it.id}}).then(refresh).catch(()=>{});}if(it.deal)onOpenDeal(it.deal,it.type);}
   function markAll(){apiFetch('notifications?action=read',{method:'POST',body:{all:true}}).then(refresh).catch(()=>{});}
   return <div style={{position:'relative'}}>
@@ -630,7 +800,7 @@ function LogTab({dealNumber}){
   const load=useCallback(()=>{apiFetch('deals?action=events&deal_number='+encodeURIComponent(dealNumber)).then(r=>{setRows(r);setLerr('');}).catch(e=>setLerr(e.message));},[dealNumber]);
   useEffect(()=>{load();},[load]);
   useLive(['events'],()=>{load();});
-  const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note'],doc_accepted:['✅','accepted a document'],doc_rejected:['⛔','rejected a document'],docs_zip:['📦','downloaded all documents as a ZIP'],payout_recorded:['💵','recorded the payout'],payout_edited:['✏️','edited the payout'],check_paid:['✅','marked the check paid'],check_unpaid:['↩️','marked the check unpaid']};
+  const meta={requested:['🚗','requested the car'],credit_app_submitted:['📄','submitted the credit application'],status_changed:['🔄','changed the status'],vehicle_confirmed:['✅','confirmed the car is available'],vehicle_unconfirmed:['↩️','removed the availability confirmation'],assigned:['👤','claimed the deal'],reassigned:['🔁','reassigned the deal'],docs_requested:['📋','requested documents'],docs_cancelled:['❌','cancelled a document request'],doc_uploaded:['📎','uploaded a document'],doc_removed:['🗑️','removed a document'],doc_viewed:['👁️','opened a document'],viewed_credit_app:['👁️','viewed the credit application'],downloaded_credit_pdf:['⬇️','downloaded the credit application PDF'],viewed_customer_id:['🆔','opened the customer ID'],note_added:['📝','added an internal note'],doc_accepted:['✅','accepted a document'],doc_rejected:['⛔','rejected a document'],docs_zip:['📦','downloaded all documents as a ZIP'],payout_recorded:['💵','recorded the payout'],payout_edited:['✏️','edited the payout'],check_paid:['✅','marked the check paid'],check_unpaid:['↩️','marked the check unpaid'],car_added:['🧰','added the car to Get Ready'],car_moved:['🚗','moved the car'],car_note:['💬','left a car note'],car_removed:['🗑️','removed the car from the board']};
   const fmt=t=>new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
   const roleChip={admin:['Staff','#DBEAFE','#1E40AF'],broker:['Broker','#D1FAE5','#065F46'],system:['System','#F3F4F6','#374151']};
   return <div>
@@ -675,13 +845,14 @@ function CreditTab({dealNumber}){
 }
 function DealModal({deal,onClose,onStatusChange,onToggleAvailable,staff,me,onAssign,startTab,onDealPatch}){
   const pre=!!deal&&['Request','Dead'].includes(deal.status);
-  const[tab,setTab]=useState(startTab||(pre?'status':'assignment')),[closing,setClosing]=useState(false);
+  const[tab,setTab]=useState(startTab||(pre?'status':'assignment')),[closing,setClosing]=useState(false),[gr,setGr]=useState(null);
+  async function askGetReady(){try{const r=await apiFetch('porter?action=deal_card&deal_number='+encodeURIComponent(deal.deal_number));if(r&&r.card){onStatusChange(deal.deal_number,'Approved');return;}}catch(e){}setGr({inspection:false});}
   if(!deal)return null;
   const availDt=deal.vehicle_available_at?new Date(deal.vehicle_available_at).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}):null;
   const sum=deal.doc_summary,docsNeed=!!sum&&sum.requested>0&&sum.received<sum.requested;
   const lbl={fontSize:11,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6};
   const card={background:'#F8FAFC',borderRadius:12,padding:16};
-  const tabs=[['assignment','Assignment'],['credit','Credit'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')],['status','Status'],['notes','Notes'],['log','Log']];
+  const tabs=[['assignment','Assignment'],['credit','Credit'],['docs','Docs'+(sum&&sum.requested>0?' ('+sum.received+'/'+sum.requested+')':'')],['status','Deal Status'],['car','Car Status'],['notes','Notes'],['log','Log']];
   return <Modal title={'Deal #'+deal.deal_number} onClose={onClose} extraWide>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:18}}>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
@@ -704,8 +875,10 @@ function DealModal({deal,onClose,onStatusChange,onToggleAvailable,staff,me,onAss
     </div>:<div style={card}>{deal.assigned_to_name?'Handled by '+deal.assigned_to_name:'Not assigned yet'}</div>)}
     {tab==='credit'&&<CreditTab dealNumber={deal.deal_number}/>}
     {tab==='docs'&&(pre?<div style={card}>Documents open once the credit application has been received.</div>:<DocsPanel dealNumber={deal.deal_number} isStaff={true}/>)}
+    {tab==='car'&&<CarStatusTab deal={deal}/>}
     {tab==='status'&&<div>
-      <div style={{...card,marginBottom:14}}><div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Status: <SBadge status={deal.status}/></div><div style={lbl}>Move to:</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{ADMIN_STATUSES.filter(s=>s!==deal.status).map(s=>{const c=SC[s]||{color:'#6B7280'};return <button key={s} onClick={()=>s==='Completed'?setClosing(true):onStatusChange(deal.deal_number,s)} style={{padding:'8px 16px',borderRadius:8,border:`2px solid ${c.color}`,background:'#fff',color:c.color,fontWeight:700,fontSize:13,cursor:'pointer',transition:'all 0.15s'}} onMouseEnter={e=>{e.target.style.background=c.color;e.target.style.color='#fff';}} onMouseLeave={e=>{e.target.style.background='#fff';e.target.style.color=c.color;}}>{s}</button>;})}</div></div>
+      <div style={{...card,marginBottom:14}}><div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Status: <SBadge status={deal.status}/></div><div style={lbl}>Move to:</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{ADMIN_STATUSES.filter(s=>s!==deal.status).map(s=>{const c=SC[s]||{color:'#6B7280'};return <button key={s} onClick={()=>s==='Completed'?setClosing(true):s==='Approved'?askGetReady():onStatusChange(deal.deal_number,s)} style={{padding:'8px 16px',borderRadius:8,border:`2px solid ${c.color}`,background:'#fff',color:c.color,fontWeight:700,fontSize:13,cursor:'pointer',transition:'all 0.15s'}} onMouseEnter={e=>{e.target.style.background=c.color;e.target.style.color='#fff';}} onMouseLeave={e=>{e.target.style.background='#fff';e.target.style.color=c.color;}}>{s}</button>;})}</div></div>
+      {gr&&<GetReadyPrompt deal={deal} inspection={gr.inspection} setInspection={v=>setGr({inspection:v})} onClose={()=>setGr(null)} onChoose={add=>{const ins=gr.inspection;setGr(null);onStatusChange(deal.deal_number,'Approved',add?{get_ready:true,needs_inspection:ins}:undefined);}}/>}
       {closing&&<CloseDealModal deal={deal} onClose={()=>setClosing(false)} onSaved={patch=>{setClosing(false);if(onDealPatch)onDealPatch(deal.deal_number,{status:'Completed',...patch});}}/>}
       {deal.status==='Completed'&&<PayoutCard deal={deal} onPatch={onDealPatch}/>}
       <div style={{...card,marginBottom:14}}><div style={lbl}>Car availability</div><div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}><Btn variant={deal.vehicle_available?'outline':'success'} onClick={()=>onToggleAvailable(deal.deal_number,deal.vehicle_available)}>{deal.vehicle_available?'✓ Available (remove)':'Mark Vehicle Available → Notify Broker'}</Btn>{availDt&&<span style={{fontSize:12,color:'#059669',fontWeight:600}}>✓ {availDt}</span>}</div></div>
@@ -726,7 +899,7 @@ function BrokerModal({broker,onClose,onResetPW}){
   const filtered=sf==="All"?deals:deals.filter(d=>d.status===sf);
   const req=deals.length,sold=deals.filter(d=>d.status==="Completed").length,cr=req?Math.round(sold/req*100):0;
   async function saveEdit(){setSaving(true);try{await apiFetch("brokers",{method:"PUT",body:{broker_code:broker.broker_code,...form}});t2("Broker updated!");}catch(e){t2(e.message,"error");}finally{setSaving(false);setEditing(false);}}
-  async function changeStatus(dn,s){try{await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,status:s}});setDeals(p=>p.map(d=>d.deal_number===dn?{...d,status:s}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,status:s}));}catch(e){t2(e.message,"error");}}
+  async function changeStatus(dn,s,extra){try{const r=await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,status:s,...(extra||{})}});if(r&&r.car&&r.car.card)t2("Added to Get Ready");else if(r&&r.car&&r.car.error)t2(r.car.error,"error");setDeals(p=>p.map(d=>d.deal_number===dn?{...d,status:s}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,status:s}));}catch(e){t2(e.message,"error");}}
   async function toggleAvail(dn,curr){try{await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,vehicle_available:!curr}});setDeals(p=>p.map(d=>d.deal_number===dn?{...d,vehicle_available:!curr}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,vehicle_available:!curr}));}catch(e){t2(e.message,"error");}}
   function patchDeal(dn,patch){setDeals(p=>p.map(d=>d.deal_number===dn?{...d,...patch}:d));setSelDeal(p=>p&&p.deal_number===dn?{...p,...patch}:p);}
   if(selDeal)return <DealModal deal={selDeal} onClose={()=>setSelDeal(null)} onStatusChange={changeStatus} onDealPatch={patchDeal} onToggleAvailable={toggleAvail}/>;
@@ -749,11 +922,12 @@ function ForgotPage({onBack}){const[email,setEmail]=useState(""),[sent,setSent]=
 function ResetPage({token,onDone}){const[p,setP]=useState(""),[c,setC]=useState(""),[done,setDone]=useState(false),[loading,setL]=useState(false),[err2,setErr]=useState("");async function submit(e){e.preventDefault();setErr("");setL(true);try{await apiFetch("auth?action=reset_password",{method:"POST",body:{token,password:p,confirm_password:c}});setDone(true);}catch(e){setErr(e.message);}finally{setL(false);}}return <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:420}}><div style={{textAlign:"center",marginBottom:36}}><div style={{fontSize:48}}>🚗</div><h1 style={{color:"#fff",margin:"8px 0 0",fontSize:26,fontWeight:800}}>BROOKLYN CDJR</h1></div><div style={{background:"#fff",borderRadius:16,padding:32,boxShadow:"0 24px 60px rgba(0,0,0,0.4)"}}>{done?<div style={{textAlign:"center"}}><div style={{fontSize:48}}>✅</div><h3>Password Updated!</h3><Btn style={{width:"100%",marginTop:16}} onClick={onDone}>Go to Login</Btn></div>:<form onSubmit={submit}><Inp label="New Password" value={p} onChange={setP} type="password" required placeholder="Min. 8 characters"/><Inp label="Confirm" value={c} onChange={setC} type="password" required/>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading} disabled={p.length<8||p!==c}>Update Password</Btn></form>}</div></div></div>;}
 
 function LoginPage({onLogin}){
-  const[mode,setMode]=useState("admin"),[u,setU]=useState(""),[p,setP]=useState(""),[bl,setBL]=useState(""),[bp,setBP]=useState(""),[err2,setErr]=useState(""),[loading,setL]=useState(false),[forgot,setForgot]=useState(false);
+  const[mode,setMode]=useState("admin"),[pu,setPU]=useState(""),[pp,setPP]=useState(""),[u,setU]=useState(""),[p,setP]=useState(""),[bl,setBL]=useState(""),[bp,setBP]=useState(""),[err2,setErr]=useState(""),[loading,setL]=useState(false),[forgot,setForgot]=useState(false);
   async function adminLogin(e){e.preventDefault();setErr("");setL(true);try{const d=await apiFetch("auth?action=admin_login",{method:"POST",body:{username:u,password:p}});localStorage.setItem("auth_token",d.token);localStorage.setItem("auth_role",d.role);localStorage.setItem("auth_name",d.name);localStorage.setItem("auth_email",d.email||"");localStorage.setItem("auth_admin_id",String(d.admin_id||""));localStorage.setItem("auth_admin_role",d.admin_role||"admin");onLogin({role:"admin",name:d.name,email:d.email,id:d.admin_id,adminRole:d.admin_role||"admin"});}catch(e){setErr(e.message);}finally{setL(false);}}
   async function brokerLogin(e){e.preventDefault();setErr("");setL(true);try{const d=await apiFetch("auth?action=broker_login",{method:"POST",body:{login:bl,password:bp}});localStorage.setItem("auth_token",d.token);localStorage.setItem("auth_role",d.role);localStorage.setItem("auth_broker",JSON.stringify(d));onLogin({role:"broker",broker:d});}catch(e){setErr(e.message);}finally{setL(false);}}
+  async function porterLogin(e){e.preventDefault();setErr("");setL(true);try{const d=await apiFetch("porter?action=login",{method:"POST",body:{username:pu,password:pp}});localStorage.setItem("auth_token",d.token);localStorage.setItem("auth_role","porter");localStorage.setItem("auth_porter",JSON.stringify(d));onLogin({role:"porter",porter:d});}catch(e){setErr(e.message);}finally{setL(false);}}
   if(forgot)return <ForgotPage onBack={()=>setForgot(false)}/>;
-  return <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:440}}><div style={{textAlign:"center",marginBottom:36}}><div style={{fontSize:48}}>🚗</div><h1 style={{color:"#fff",margin:"8px 0 0",fontSize:26,fontWeight:800,letterSpacing:"-0.5px"}}>BROOKLYN CDJR</h1><p style={{color:"#93C5FD",margin:"4px 0 0",fontSize:14}}>Broker Deal Portal</p></div><div style={{background:"#fff",borderRadius:16,overflow:"hidden",boxShadow:"0 24px 60px rgba(0,0,0,0.4)"}}><div style={{display:"flex",borderBottom:"2px solid #F3F4F6"}}>{["admin","broker"].map(m=><button key={m} onClick={()=>{setMode(m);setErr("");}} style={{flex:1,padding:14,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,textTransform:"uppercase",letterSpacing:"0.05em",background:mode===m?"#1D4ED8":"#fff",color:mode===m?"#fff":"#9CA3AF",transition:"all 0.2s"}}>{m==="admin"?"Admin Login":"Broker Login"}</button>)}</div><div style={{padding:28}}>{mode==="admin"?<form onSubmit={adminLogin} autoComplete="off"><Inp label="Username or Email" value={u} onChange={setU} required placeholder="admin"/><Inp label="Password" value={p} onChange={setP} type="password" required placeholder="••••••••"/>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading}>Sign In as Admin</Btn><button type="button" onClick={()=>setForgot(true)} style={{width:"100%",marginTop:12,background:"none",border:"none",cursor:"pointer",color:"#6B7280",fontSize:13,textDecoration:"underline"}}>Forgot password?</button></form>:<form onSubmit={brokerLogin} autoComplete="off"><Inp label="Username, email or Broker ID" value={bl} onChange={setBL} required placeholder="e.g. B001, your username or your email"/><Inp label="Password" value={bp} onChange={setBP} type="password" required placeholder="••••••••"/><p style={{fontSize:12,color:"#9CA3AF",margin:"-8px 0 16px"}}>Don't have an account? Contact Brooklyn CDJR.</p>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading}>Sign In</Btn><button type="button" onClick={()=>setForgot(true)} style={{width:"100%",marginTop:12,background:"none",border:"none",cursor:"pointer",color:"#6B7280",fontSize:13,textDecoration:"underline"}}>Forgot password?</button></form>}</div></div></div></div>;
+  return <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:440}}><div style={{textAlign:"center",marginBottom:36}}><div style={{fontSize:48}}>🚗</div><h1 style={{color:"#fff",margin:"8px 0 0",fontSize:26,fontWeight:800,letterSpacing:"-0.5px"}}>BROOKLYN CDJR</h1><p style={{color:"#93C5FD",margin:"4px 0 0",fontSize:14}}>Broker Deal Portal</p></div><div style={{background:"#fff",borderRadius:16,overflow:"hidden",boxShadow:"0 24px 60px rgba(0,0,0,0.4)"}}><div style={{display:"flex",borderBottom:"2px solid #F3F4F6"}}>{["admin","broker","porter"].map(m=><button key={m} onClick={()=>{setMode(m);setErr("");}} style={{flex:1,padding:14,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,textTransform:"uppercase",letterSpacing:"0.05em",background:mode===m?"#1D4ED8":"#fff",color:mode===m?"#fff":"#9CA3AF",transition:"all 0.2s"}}>{m==="admin"?"Admin Login":m==="porter"?"Porter Login":"Broker Login"}</button>)}</div><div style={{padding:28}}>{mode==="admin"?<form onSubmit={adminLogin} autoComplete="off"><Inp label="Username or Email" value={u} onChange={setU} required placeholder="admin"/><Inp label="Password" value={p} onChange={setP} type="password" required placeholder="••••••••"/>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading}>Sign In as Admin</Btn><button type="button" onClick={()=>setForgot(true)} style={{width:"100%",marginTop:12,background:"none",border:"none",cursor:"pointer",color:"#6B7280",fontSize:13,textDecoration:"underline"}}>Forgot password?</button></form>:mode==="porter"?<form onSubmit={porterLogin} autoComplete="off"><Inp label="Username" value={pu} onChange={setPU} required placeholder="your porter username"/><Inp label="Password" value={pp} onChange={setPP} type="password" required placeholder={"\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}/>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading}>Sign In as Porter</Btn></form>:<form onSubmit={brokerLogin} autoComplete="off"><Inp label="Username, email or Broker ID" value={bl} onChange={setBL} required placeholder="e.g. B001, your username or your email"/><Inp label="Password" value={bp} onChange={setBP} type="password" required placeholder="••••••••"/><p style={{fontSize:12,color:"#9CA3AF",margin:"-8px 0 16px"}}>Don't have an account? Contact Brooklyn CDJR.</p>{err2&&<p style={{color:"#EF4444",fontSize:13,margin:"0 0 12px"}}>{err2}</p>}<Btn style={{width:"100%"}} loading={loading}>Sign In</Btn><button type="button" onClick={()=>setForgot(true)} style={{width:"100%",marginTop:12,background:"none",border:"none",cursor:"pointer",color:"#6B7280",fontSize:13,textDecoration:"underline"}}>Forgot password?</button></form>}</div></div></div></div>;
 }
 
 function BrokerPortal({broker,onLogout}){
@@ -875,7 +1049,7 @@ function AdminPortal({user,onLogout}){
   const stats=useMemo(()=>{const total=deals.length,apps=deals.filter(d=>["Application","Approved","Docs Sent","Ready to Pick Up","Completed"].includes(d.status)).length,approved=deals.filter(d=>["Approved","Docs Sent","Ready to Pick Up","Completed"].includes(d.status)).length,sold=deals.filter(d=>d.status==="Completed").length;return{total,apps,approved,sold,appRate:total?Math.round(apps/total*100):0,closeRate:total?Math.round(sold/total*100):0};},[deals]);
   const filteredBrokers=useMemo(()=>bs?brokers.filter(b=>b.company_name.toLowerCase().includes(bs.toLowerCase())||b.broker_code.toLowerCase().includes(bs.toLowerCase())):brokers,[brokers,bs]);
   function patchDeal(dn,patch){setDeals(p=>p.map(d=>d.deal_number===dn?{...d,...patch}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,...patch}));}
-  async function updateStatus(dn,s){try{await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,status:s}});t2(`Moved to ${s}`);setDeals(p=>p.map(d=>d.deal_number===dn?{...d,status:s}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,status:s}));}catch(e){t2(e.message,"error");}}
+  async function updateStatus(dn,s,extra){try{const r=await apiFetch("deals?action=status",{method:"PUT",body:{deal_number:dn,status:s,...(extra||{})}});t2(r&&r.car&&r.car.card?`Moved to ${s} and added to Get Ready`:r&&r.car&&r.car.error?`Moved to ${s}. Get Ready: ${r.car.error}`:`Moved to ${s}`,r&&r.car&&r.car.error?"error":"success");setDeals(p=>p.map(d=>d.deal_number===dn?{...d,status:s}:d));if(selDeal?.deal_number===dn)setSelDeal(p=>({...p,status:s}));}catch(e){t2(e.message,"error");}}
   const viewToggle=<select value={viewMode} onChange={e=>{setViewMode(e.target.value);localStorage.setItem('admin_view',e.target.value);}} title='Choose whose deals to show' style={{padding:'8px 12px',borderRadius:10,border:'1.5px solid #D1D5DB',background:'#fff',fontWeight:700,fontSize:13,color:'#1F2937',cursor:'pointer',minWidth:210}}><option value='all'>All deals</option><option value='me'>My deals</option><option value='unassigned'>Unassigned (needs an owner)</option>{admins.filter(a=>String(a.id)!==String(user.id)&&a.email!==user.email).map(a=><option key={a.id} value={String(a.id)}>{a.name}{a.role==='fleet_manager'?' (Fleet Manager)':''}</option>)}</select>;
   async function doAssign(dn,assigneeId,extra){try{const r=await apiFetch('deals?action=assign',{method:'PUT',body:{deal_number:dn,assignee_id:assigneeId,...(extra||{})}});t2(r.message||'Assigned');setSelDeal(d=>d?{...d,assigned_to:r.assigned_to,assigned_to_name:r.assigned_to_name}:d);loadDeals();return true;}catch(e){if(String(e.message).startsWith('REASSIGN_CONFIRM:')){askReassign(dn,assigneeId,String(e.message).slice(17).trim());}else{t2(e.message,'error');}return false;}}
   function askReassign(dn,assigneeId,currentName){const t=assigneeId==='me'?{name:user.name}:(admins.find(a=>String(a.id)===String(assigneeId))||{});setRsNotify(true);setRsMsg('');setReassign({dn,assigneeId,targetName:t.name||'this user',currentName:currentName||(selDeal&&selDeal.assigned_to_name)||'the current owner',broker:(selDeal&&selDeal.broker_name)||'the broker'});}
@@ -893,9 +1067,9 @@ function AdminPortal({user,onLogout}){
   return <div style={{minHeight:"100vh",background:"#F1F5F9",fontFamily:"system-ui,-apple-system,sans-serif"}}>
     <div style={{background:"#0F172A",padding:"0 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <div style={{display:"flex",alignItems:"center",gap:16,padding:"16px 0"}}><span style={{fontSize:26}}>🚗</span><div><div style={{color:"#fff",fontWeight:800,fontSize:18}}>BROOKLYN CDJR</div><div style={{color:"#93C5FD",fontSize:12,letterSpacing:"0.05em"}}>ADMIN PORTAL</div></div></div>
-      <div style={{display:"flex",alignItems:"center",gap:12}}><NotificationsBell onOpenDeal={(d,t)=>{setSelTab(({new_request:"status",credit_app:"credit",assigned:"assignment",reassigned:"assignment",docs_uploaded:"docs",docs_complete:"docs",note:"notes"})[t]||null);setSelDeal(d);}}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
+      <div style={{display:"flex",alignItems:"center",gap:12}}><NotificationsBell onOpenDeal={(d,t)=>{setSelTab(({new_request:"status",credit_app:"credit",assigned:"assignment",reassigned:"assignment",docs_uploaded:"docs",docs_complete:"docs",note:"notes",porter_note:"car"})[t]||null);setSelDeal(d);}}/><button onClick={()=>setTab("settings")} style={{background:"none",border:"none",cursor:"pointer",textAlign:"right"}}><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}{user.adminRole==="fleet_manager"&&<span style={{marginLeft:6,fontSize:10,background:"#FEF3C7",color:"#92400E",padding:"1px 6px",borderRadius:8}}>FLEET MANAGER</span>}</div><div style={{color:"#93C5FD",fontSize:11}}>{user.email}</div></button><Btn variant="outline" size="sm" onClick={onLogout} style={{borderColor:"#334155",color:"#94A3B8"}}>Sign Out</Btn></div>
     </div>
-    <div style={{background:"#fff",borderBottom:"1px solid #E5E7EB",padding:"0 28px",display:"flex",gap:4,overflowX:"auto"}}>{TAB("dashboard","📊 Dashboard")}{TAB("pipeline","🔄 Pipeline")}{TAB("brokers","👥 Brokers")}{TAB("inventory","🚘 Inventory")}{TAB("settings","⚙️ Settings")}</div>
+    <div style={{background:"#fff",borderBottom:"1px solid #E5E7EB",padding:"0 28px",display:"flex",gap:4,overflowX:"auto"}}>{TAB("dashboard","📊 Dashboard")}{TAB("pipeline","🔄 Pipeline")}{TAB("brokers","👥 Brokers")}{TAB("inventory","🚘 Inventory")}{TAB("getready","🧰 Get Ready")}{TAB("settings","⚙️ Settings")}</div>
     <div style={{maxWidth:1200,margin:"0 auto",padding:"28px 20px"}}>
       {tab==="dashboard"&&<>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:20}}><h2 style={{margin:0,fontSize:22,fontWeight:800}}>Overview</h2>{viewToggle}</div>
@@ -933,6 +1107,7 @@ function AdminPortal({user,onLogout}){
         {csv&&<div style={{background:"#ECFDF5",border:"2px solid #10B981",borderRadius:12,padding:20,marginBottom:20}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,color:"#065F46"}}>📄 {csv.fileName}</div><div style={{fontSize:13,color:"#047857"}}>{csv.rows.length} vehicles detected</div></div><div style={{display:"flex",gap:10}}><Btn variant="outline" size="sm" onClick={()=>setCSV(null)}>Cancel</Btn><Btn variant="success" onClick={confirmImport} loading={loading}>✓ Confirm Import</Btn></div></div></div>}
         <div style={{background:"#fff",borderRadius:14,overflow:"auto",boxShadow:"0 1px 6px rgba(0,0,0,0.07)"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}><thead style={{background:"#F8FAFC"}}><tr>{["Stock #","VIN","Year/Make/Model","Trim","Status","MSRP","Exterior","Age"].map(h=><th key={h} style={{textAlign:"left",padding:"12px 14px",fontWeight:700,fontSize:11,textTransform:"uppercase",color:"#6B7280",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{inv.filter(v=>invSearch===""||v.year_make_model?.toLowerCase().includes(invSearch.toLowerCase())||v.stock_num?.toLowerCase().includes(invSearch.toLowerCase())||v.vin?.toLowerCase().includes(invSearch.toLowerCase())).map(v=><tr key={v.vin} style={{borderTop:"1px solid #F3F4F6"}}><td style={{padding:"11px 14px",fontWeight:700}}>{v.stock_num}</td><td style={{padding:"11px 14px",fontFamily:"monospace",fontSize:12,color:"#6B7280"}}>{v.vin}</td><td style={{padding:"11px 14px",fontWeight:600}}>{v.year_make_model}</td><td style={{padding:"11px 14px",color:"#6B7280"}}>{v.trim}</td><td style={{padding:"11px 14px"}}><SBadge status={v.inv_status}/></td><td style={{padding:"11px 14px",fontWeight:600}}>{v.msrp}</td><td style={{padding:"11px 14px",color:"#6B7280"}}>{v.exterior_color}</td><td style={{padding:"11px 14px",fontWeight:700,color:v.age_days>60?"#EF4444":v.age_days>30?"#F59E0B":"#374151"}}>{v.age_days}</td></tr>)}</tbody></table></div>
       </>}
+      {tab==="getready"&&<GetReadyAdmin onOpenDeal={dn=>{const d=deals.find(x=>x.deal_number===dn);if(d){setSelTab("car");setSelDeal(d);}else t2("Open that deal from the Pipeline");}}/>}
       {tab==="settings"&&<>
         <h2 style={{margin:"0 0 24px",fontSize:22,fontWeight:800}}>Settings</h2>
         <div style={{background:"#fff",borderRadius:14,padding:24,boxShadow:"0 1px 6px rgba(0,0,0,0.07)",marginBottom:20}}><h3 style={{margin:"0 0 20px",fontSize:16,fontWeight:700}}>My Profile</h3><div style={{display:"flex",gap:16,flexWrap:"wrap"}}><Inp half label="Full Name" value={pf.name} onChange={v=>setPF(p=>({...p,name:v}))}/><Inp half label="Email" value={pf.email} onChange={v=>setPF(p=>({...p,email:v}))} type="email"/></div><h4 style={{margin:"8px 0 16px",fontSize:14,fontWeight:700,color:"#374151"}}>Change Password</h4><div style={{display:"flex",gap:16,flexWrap:"wrap"}}><Inp half label="Current Password" value={pf.current_password} onChange={v=>setPF(p=>({...p,current_password:v}))} type="password"/><Inp half label="New Password" value={pf.new_password} onChange={v=>setPF(p=>({...p,new_password:v}))} type="password" hint="Min 8"/><Inp half label="Confirm" value={pf.confirm_password} onChange={v=>setPF(p=>({...p,confirm_password:v}))} type="password"/></div><Btn onClick={async()=>{setL(true);try{await apiFetch("admins",{method:"PUT",body:pf});t2("Profile updated");setPF(p=>({...p,current_password:"",new_password:"",confirm_password:""}));}catch(e){t2(e.message,"error");}finally{setL(false);}}} loading={loading}>Save Changes</Btn></div>
@@ -957,11 +1132,12 @@ function AdminPortal({user,onLogout}){
 
 export default function App(){
   const[auth,setAuth]=useState(null),[rt,setRT]=useState(null);
-  useEffect(()=>{const params=new URLSearchParams(window.location.search);const token=params.get("reset_token");if(token){setRT(token);return;}const st=localStorage.getItem("auth_token"),role=localStorage.getItem("auth_role");if(!st||!role)return;if(role==="admin"){setAuth({role:"admin",name:localStorage.getItem("auth_name")||"Admin",email:localStorage.getItem("auth_email")||"",id:localStorage.getItem("auth_admin_id")||null,adminRole:localStorage.getItem("auth_admin_role")||"admin"});}else{try{setAuth({role:"broker",broker:JSON.parse(localStorage.getItem("auth_broker"))});}catch{localStorage.clear();}}},[]);
+  useEffect(()=>{const params=new URLSearchParams(window.location.search);const token=params.get("reset_token");if(token){setRT(token);return;}const st=localStorage.getItem("auth_token"),role=localStorage.getItem("auth_role");if(!st||!role)return;if(role==="admin"){setAuth({role:"admin",name:localStorage.getItem("auth_name")||"Admin",email:localStorage.getItem("auth_email")||"",id:localStorage.getItem("auth_admin_id")||null,adminRole:localStorage.getItem("auth_admin_role")||"admin"});}else if(role==="porter"){try{setAuth({role:"porter",porter:JSON.parse(localStorage.getItem("auth_porter"))});}catch{localStorage.clear();}}else{try{setAuth({role:"broker",broker:JSON.parse(localStorage.getItem("auth_broker"))});}catch{localStorage.clear();}}},[]);
   function login(d){setAuth(d);}
-  function logout(){const t=localStorage.getItem("auth_token");if(t)apiFetch("auth?action=logout",{method:"POST"}).catch(()=>{});localStorage.clear();setAuth(null);}
+  function logout(){const t=localStorage.getItem("auth_token"),r=localStorage.getItem("auth_role");if(t)apiFetch(r==="porter"?"porter?action=logout":"auth?action=logout",{method:"POST"}).catch(()=>{});localStorage.clear();setAuth(null);}
   if(rt)return <ResetPage token={rt} onDone={()=>{setRT(null);window.history.replaceState({},"","/");}}/>;
   if(!auth)return <LoginPage onLogin={login}/>;
+  if(auth.role==="porter")return <PorterPortal porter={auth.porter} onLogout={logout}/>;
   if(auth.role==="broker")return <><BrokerPortal broker={auth.broker} onLogout={logout}/><ChatWidget/><LivePulse/></>;
   return <><AdminPortal user={auth} onLogout={logout}/><ChatWidget/><LivePulse/></>;
 }
