@@ -289,7 +289,7 @@ function NotificationsBell({onOpenDeal}){
   useEffect(()=>{refresh();const t=setInterval(refresh,25000);const h=()=>refresh();window.addEventListener('notes-seen',h);return()=>{clearInterval(t);window.removeEventListener('notes-seen',h);};},[refresh]);
   const has=data.count>0;
   const ago=t=>{const m=Math.max(0,Math.round((Date.now()-new Date(t).getTime())/60000));return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' hr ago':Math.round(m/1440)+' d ago';};
-  const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',note:'📝'};
+  const icons={new_request:'🚗',credit_app:'📄',assigned:'👤',reassigned:'🔁',note:'📝'};
   function openItem(it){setOpen(false);if(it.kind==='event'&&it.unread){apiFetch('notifications?action=read',{method:'POST',body:{id:it.id}}).then(refresh).catch(()=>{});}if(it.deal)onOpenDeal(it.deal);}
   function markAll(){apiFetch('notifications?action=read',{method:'POST',body:{all:true}}).then(refresh).catch(()=>{});}
   return <div style={{position:'relative'}}>

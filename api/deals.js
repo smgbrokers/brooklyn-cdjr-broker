@@ -219,6 +219,7 @@ export default async function handler(req, res) {
     const changed = String(deal.assigned_to || '') !== String(assignee.id)
     const hadAssignee = !!deal.assigned_to
     const isReassign = hadAssignee && changed
+    const prevOwnerId = deal.assigned_to
     // Reassigning needs an explicit yes, so a stale screen can never silently take a deal from a colleague
     if (isReassign && confirm_reassign !== true) {
       const { data: curOwner } = await supabase.from('admins').select('id,name').eq('id', deal.assigned_to).single()
@@ -235,6 +236,11 @@ export default async function handler(req, res) {
     if (changed && String(assignee.id) !== String(session.user_id)) {
       const { data: byAdmin } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
       await notifyStaff({ type: 'assigned', dealNumber: deal.deal_number, onlyAdminId: assignee.id, title: 'Deal assigned to you', body: (byAdmin ? byAdmin.name : 'A teammate') + ' assigned Deal #' + deal.deal_number + ' (' + deal.customer_name + ') to you' })
+    }
+    // Tell the previous owner their deal moved (unless they are the one who moved it)
+    if (isReassign && prevOwnerId && String(prevOwnerId) !== String(session.user_id)) {
+      const { data: mover } = await supabase.from('admins').select('id,name').eq('id', session.user_id).single()
+      await notifyStaff({ type: 'reassigned', dealNumber: deal.deal_number, onlyAdminId: prevOwnerId, title: 'Deal reassigned', body: 'Deal #' + deal.deal_number + ' (' + deal.customer_name + ') was reassigned to ' + assignee.name + (mover && String(mover.id) !== String(assignee.id) ? ' by ' + mover.name : '') + '.' })
     }
     let emailed = false
     if (isReassign && notifyBroker) {
